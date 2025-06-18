@@ -10,7 +10,7 @@ use axum::{
 };
 use std::sync::Arc;
 use tower_http::trace::TraceLayer;
-use tracing::{info, warn};
+use tracing::info;
 use uuid::Uuid;
 
 use agent::{Agent, AgentConfig, AgentStore, HealthStatus};
@@ -31,9 +31,9 @@ pub struct AgentMtlsState {
 pub fn create_client_app(state: AppState) -> Router {
     Router::new()
         .route("/agents", get(list_agents))
-        .route("/agent/:id", get(get_agent))
-        .route("/agent/:id/config", get(get_agent_config))
-        .route("/agent/:id/health", get(get_agent_health))
+        .route("/agent/{id}", get(get_agent))
+        .route("/agent/{id}/config", get(get_agent_config))
+        .route("/agent/{id}/health", get(get_agent_health))
         .with_state(state)
         .layer(TraceLayer::new_for_http())
 }
@@ -42,8 +42,8 @@ pub fn create_client_app(state: AppState) -> Router {
 pub fn create_agent_app(state: AgentMtlsState) -> Router {
     Router::new()
         .route("/agent/register", post(register_agent))
-        .route("/agent/:id/config", post(update_agent_config))
-        .route("/agent/:id/health", post(update_agent_health))
+        .route("/agent/{id}/config", post(update_agent_config))
+        .route("/agent/{id}/health", post(update_agent_health))
         .with_state(state)
         .layer(TraceLayer::new_for_http())
 }
@@ -52,7 +52,7 @@ pub fn create_agent_app(state: AgentMtlsState) -> Router {
 pub fn create_app(client_state: AppState, agent_state: AgentMtlsState) -> Router {
     let client_router = create_client_app(client_state);
     let agent_router = create_agent_app(agent_state);
-    
+
     Router::new()
         .nest("/api", client_router)
         .nest("/agent-api", agent_router)
@@ -123,8 +123,11 @@ async fn register_agent(
     State(state): State<AgentMtlsState>,
     Json(payload): Json<RegisterAgentRequest>,
 ) -> Result<Json<Agent>, StatusCode> {
-    let agent_id = state.agent_store.add_agent(payload.name, payload.endpoint).await;
-    
+    let agent_id = state
+        .agent_store
+        .add_agent(payload.name, payload.endpoint)
+        .await;
+
     match state.agent_store.get(&agent_id).await {
         Some(agent) => {
             info!("Agent {} registered successfully", agent_id);
@@ -146,7 +149,10 @@ async fn update_agent_config(
         return Err(StatusCode::NOT_FOUND);
     }
 
-    state.agent_store.update_config(&agent_id, config.clone()).await;
+    state
+        .agent_store
+        .update_config(&agent_id, config.clone())
+        .await;
     info!("Config updated for agent {}", agent_id);
     Ok(Json(config))
 }
@@ -163,7 +169,10 @@ async fn update_agent_health(
         return Err(StatusCode::NOT_FOUND);
     }
 
-    state.agent_store.update_health(&agent_id, health.clone()).await;
+    state
+        .agent_store
+        .update_health(&agent_id, health.clone())
+        .await;
     info!("Health updated for agent {}", agent_id);
     Ok(Json(health))
 }
