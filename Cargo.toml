@@ -24,7 +24,7 @@ clap = { version = "4.5", features = ["derive"] }
 
 [dev-dependencies]
 tokio-test = "0.4"
-axum-test = "16.0"
+axum-test = "17.0"
 mockall = "0.13"
 wiremock = "0.6"
 tempfile = "3.10"
