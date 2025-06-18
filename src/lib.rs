@@ -1,30 +1,24 @@
 pub mod agent;
-pub mod mtls;
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Request, State},
     http::StatusCode,
+    middleware::Next,
     response::Json,
+    response::Response,
     routing::{get, post},
     Router,
 };
-use std::sync::Arc;
 use tower_http::trace::TraceLayer;
 use tracing::info;
 use uuid::Uuid;
 
 use agent::{Agent, AgentConfig, AgentStore, HealthStatus};
-use mtls::MtlsClient;
 
 #[derive(Clone)]
 pub struct AppState {
     pub agent_store: AgentStore,
-}
-
-#[derive(Clone)]
-pub struct AgentMtlsState {
-    pub agent_store: AgentStore,
-    pub mtls_client: Arc<MtlsClient>,
+    pub api_key: String,
 }
 
 // Client-facing API (regular REST - no mTLS required)
@@ -38,24 +32,49 @@ pub fn create_client_app(state: AppState) -> Router {
         .layer(TraceLayer::new_for_http())
 }
 
-// Agent-facing API (mTLS required for agents to post their data)
-pub fn create_agent_app(state: AgentMtlsState) -> Router {
+// Agent-facing API (API key required for agents to post their data)
+pub fn create_agent_app(state: AppState) -> Router {
     Router::new()
         .route("/agent/register", post(register_agent))
         .route("/agent/{id}/config", post(update_agent_config))
         .route("/agent/{id}/health", post(update_agent_health))
-        .with_state(state)
+        .with_state(state.clone())
+        .layer(axum::middleware::from_fn_with_state(
+            state,
+            validate_api_key,
+        ))
         .layer(TraceLayer::new_for_http())
 }
 
 // Combined app with both client and agent endpoints
-pub fn create_app(client_state: AppState, agent_state: AgentMtlsState) -> Router {
-    let client_router = create_client_app(client_state);
-    let agent_router = create_agent_app(agent_state);
+pub fn create_app(state: AppState) -> Router {
+    let client_router = create_client_app(state.clone());
+    let agent_router = create_agent_app(state);
 
     Router::new()
         .nest("/api", client_router)
         .nest("/agent-api", agent_router)
+}
+
+// API key validation middleware
+async fn validate_api_key(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    let auth_header = request
+        .headers()
+        .get("authorization")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer "));
+
+    match auth_header {
+        Some(key) if key == state.api_key => Ok(next.run(request).await),
+        _ => {
+            info!("Unauthorized access attempt to agent API");
+            Err(StatusCode::UNAUTHORIZED)
+        }
+    }
 }
 
 // Client-facing handlers (regular REST API)
@@ -120,7 +139,7 @@ struct RegisterAgentRequest {
 }
 
 async fn register_agent(
-    State(state): State<AgentMtlsState>,
+    State(state): State<AppState>,
     Json(payload): Json<RegisterAgentRequest>,
 ) -> Result<Json<Agent>, StatusCode> {
     let agent_id = state
@@ -138,7 +157,7 @@ async fn register_agent(
 }
 
 async fn update_agent_config(
-    State(state): State<AgentMtlsState>,
+    State(state): State<AppState>,
     Path(id): Path<String>,
     Json(config): Json<AgentConfig>,
 ) -> Result<Json<AgentConfig>, StatusCode> {
@@ -158,7 +177,7 @@ async fn update_agent_config(
 }
 
 async fn update_agent_health(
-    State(state): State<AgentMtlsState>,
+    State(state): State<AppState>,
     Path(id): Path<String>,
     Json(health): Json<HealthStatus>,
 ) -> Result<Json<HealthStatus>, StatusCode> {
