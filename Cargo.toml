@@ -23,6 +23,6 @@ chrono = { version = "0.4", features = ["serde"] }
 
 [dev-dependencies]
 tokio-test = "0.4"
-axum-test = "16.0"
+axum-test = "17.0"
 mockall = "0.13"
 wiremock = "0.6"
