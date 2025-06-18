@@ -8,9 +8,9 @@ use saimiris_gateway::{agent::AgentStore, create_app, AppState};
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
 pub struct Cli {
-    /// API key for agent authentication
-    #[arg(long)]
-    pub api_key: String,
+    /// Agent key for agent authentication
+    #[arg(long = "agent-key")]
+    pub agent_key: String,
 }
 
 #[tokio::main]
@@ -23,10 +23,10 @@ async fn main() -> anyhow::Result<()> {
 
     let agent_store = AgentStore::new();
 
-    // Create app state with API key for authentication
+    // Create app state with agent key for authentication
     let state = AppState {
         agent_store,
-        api_key: cli.api_key,
+        agent_key: cli.agent_key,
     };
 
     let app = create_app(state);

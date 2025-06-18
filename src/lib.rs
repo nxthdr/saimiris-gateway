@@ -18,7 +18,7 @@ use agent::{Agent, AgentConfig, AgentStore, HealthStatus};
 #[derive(Clone)]
 pub struct AppState {
     pub agent_store: AgentStore,
-    pub api_key: String,
+    pub agent_key: String,
 }
 
 // Client-facing API (regular REST - no mTLS required)
@@ -41,7 +41,7 @@ pub fn create_agent_app(state: AppState) -> Router {
         .with_state(state.clone())
         .layer(axum::middleware::from_fn_with_state(
             state,
-            validate_api_key,
+            validate_agent_key,
         ))
         .layer(TraceLayer::new_for_http())
 }
@@ -57,7 +57,7 @@ pub fn create_app(state: AppState) -> Router {
 }
 
 // API key validation middleware
-async fn validate_api_key(
+async fn validate_agent_key(
     State(state): State<AppState>,
     request: Request,
     next: Next,
@@ -69,7 +69,7 @@ async fn validate_api_key(
         .and_then(|s| s.strip_prefix("Bearer "));
 
     match auth_header {
-        Some(key) if key == state.api_key => Ok(next.run(request).await),
+        Some(key) if key == state.agent_key => Ok(next.run(request).await),
         _ => {
             info!("Unauthorized access attempt to agent API");
             Err(StatusCode::UNAUTHORIZED)
