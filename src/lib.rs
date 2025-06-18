@@ -1,17 +1,16 @@
 pub mod agent;
 
 use axum::{
+    Router,
     extract::{Path, Request, State},
     http::StatusCode,
     middleware::Next,
     response::Json,
     response::Response,
     routing::{get, post},
-    Router,
 };
 use tower_http::trace::TraceLayer;
 use tracing::info;
-use uuid::Uuid;
 
 use agent::{Agent, AgentConfig, AgentStore, HealthStatus};
 
@@ -25,9 +24,9 @@ pub struct AppState {
 pub fn create_client_app(state: AppState) -> Router {
     Router::new()
         .route("/agents", get(list_agents))
-        .route("/agent/{id}", get(get_agent))
-        .route("/agent/{id}/config", get(get_agent_config))
-        .route("/agent/{id}/health", get(get_agent_health))
+        .route("/agent/{name}", get(get_agent))
+        .route("/agent/{name}/config", get(get_agent_config))
+        .route("/agent/{name}/health", get(get_agent_health))
         .with_state(state)
         .layer(TraceLayer::new_for_http())
 }
@@ -36,8 +35,8 @@ pub fn create_client_app(state: AppState) -> Router {
 pub fn create_agent_app(state: AppState) -> Router {
     Router::new()
         .route("/agent/register", post(register_agent))
-        .route("/agent/{id}/config", post(update_agent_config))
-        .route("/agent/{id}/health", post(update_agent_health))
+        .route("/agent/{name}/config", post(update_agent_config))
+        .route("/agent/{name}/health", post(update_agent_health))
         .with_state(state.clone())
         .layer(axum::middleware::from_fn_with_state(
             state,
@@ -85,11 +84,9 @@ async fn list_agents(State(state): State<AppState>) -> Json<Vec<Agent>> {
 
 async fn get_agent(
     State(state): State<AppState>,
-    Path(id): Path<String>,
+    Path(name): Path<String>,
 ) -> Result<Json<Agent>, StatusCode> {
-    let agent_id = id.parse::<Uuid>().map_err(|_| StatusCode::BAD_REQUEST)?;
-
-    match state.agent_store.get(&agent_id).await {
+    match state.agent_store.get(&name).await {
         Some(agent) => Ok(Json(agent)),
         None => Err(StatusCode::NOT_FOUND),
     }
@@ -97,13 +94,11 @@ async fn get_agent(
 
 async fn get_agent_config(
     State(state): State<AppState>,
-    Path(id): Path<String>,
+    Path(name): Path<String>,
 ) -> Result<Json<AgentConfig>, StatusCode> {
-    let agent_id = id.parse::<Uuid>().map_err(|_| StatusCode::BAD_REQUEST)?;
-
     let agent = state
         .agent_store
-        .get(&agent_id)
+        .get(&name)
         .await
         .ok_or(StatusCode::NOT_FOUND)?;
 
@@ -115,13 +110,11 @@ async fn get_agent_config(
 
 async fn get_agent_health(
     State(state): State<AppState>,
-    Path(id): Path<String>,
+    Path(name): Path<String>,
 ) -> Result<Json<HealthStatus>, StatusCode> {
-    let agent_id = id.parse::<Uuid>().map_err(|_| StatusCode::BAD_REQUEST)?;
-
     let agent = state
         .agent_store
-        .get(&agent_id)
+        .get(&name)
         .await
         .ok_or(StatusCode::NOT_FOUND)?;
 
@@ -135,63 +128,48 @@ async fn get_agent_health(
 #[derive(serde::Deserialize)]
 struct RegisterAgentRequest {
     name: String,
-    endpoint: String,
 }
 
 async fn register_agent(
     State(state): State<AppState>,
     Json(payload): Json<RegisterAgentRequest>,
 ) -> Result<Json<Agent>, StatusCode> {
-    let agent_id = state
-        .agent_store
-        .add_agent(payload.name, payload.endpoint)
-        .await;
-
-    match state.agent_store.get(&agent_id).await {
-        Some(agent) => {
-            info!("Agent {} registered successfully", agent_id);
+    match state.agent_store.add_agent(payload.name.clone()).await {
+        Ok(()) => {
+            let agent = state.agent_store.get(&payload.name).await.unwrap();
+            info!("Agent '{}' registered successfully", agent.name);
             Ok(Json(agent))
         }
-        None => Err(StatusCode::INTERNAL_SERVER_ERROR),
+        Err(_) => Err(StatusCode::CONFLICT),
     }
 }
 
 async fn update_agent_config(
     State(state): State<AppState>,
-    Path(id): Path<String>,
+    Path(name): Path<String>,
     Json(config): Json<AgentConfig>,
 ) -> Result<Json<AgentConfig>, StatusCode> {
-    let agent_id = id.parse::<Uuid>().map_err(|_| StatusCode::BAD_REQUEST)?;
-
     // Verify agent exists
-    if state.agent_store.get(&agent_id).await.is_none() {
+    if state.agent_store.get(&name).await.is_none() {
         return Err(StatusCode::NOT_FOUND);
     }
 
-    state
-        .agent_store
-        .update_config(&agent_id, config.clone())
-        .await;
-    info!("Config updated for agent {}", agent_id);
+    state.agent_store.update_config(&name, config.clone()).await;
+    info!("Config updated for agent {}", name);
     Ok(Json(config))
 }
 
 async fn update_agent_health(
     State(state): State<AppState>,
-    Path(id): Path<String>,
+    Path(name): Path<String>,
     Json(health): Json<HealthStatus>,
 ) -> Result<Json<HealthStatus>, StatusCode> {
-    let agent_id = id.parse::<Uuid>().map_err(|_| StatusCode::BAD_REQUEST)?;
-
     // Verify agent exists
-    if state.agent_store.get(&agent_id).await.is_none() {
+    if state.agent_store.get(&name).await.is_none() {
         return Err(StatusCode::NOT_FOUND);
     }
 
-    state
-        .agent_store
-        .update_health(&agent_id, health.clone())
-        .await;
-    info!("Health updated for agent {}", agent_id);
+    state.agent_store.update_health(&name, health.clone()).await;
+    info!("Health updated for agent {}", name);
     Ok(Json(health))
 }
