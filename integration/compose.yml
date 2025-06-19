@@ -1,0 +1,22 @@
+services:
+  redpanda:
+    image: redpandadata/redpanda:latest
+    volumes:
+      - ./config/redpanda/redpanda.yml:/etc/redpanda/redpanda.yaml:ro
+    ports:
+      - "9092:9092"
+
+  gateway:
+    build: ..
+    command: -v --agent-key=testkey
+    ports:
+      - "8080:8080"
+
+  agent:
+    image: ghcr.io/nxthdr/saimiris:main
+    command: agent --config /config/agent.yml
+    depends_on:
+      - redpanda
+      - gateway
+    volumes:
+      - ./config/agent/agent.yml:/config/agent.yml:ro

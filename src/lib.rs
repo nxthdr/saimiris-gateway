@@ -24,9 +24,9 @@ pub struct AppState {
 pub fn create_client_app(state: AppState) -> Router {
     Router::new()
         .route("/agents", get(list_agents))
-        .route("/agent/{name}", get(get_agent))
-        .route("/agent/{name}/config", get(get_agent_config))
-        .route("/agent/{name}/health", get(get_agent_health))
+        .route("/agent/{id}", get(get_agent))
+        .route("/agent/{id}/config", get(get_agent_config))
+        .route("/agent/{id}/health", get(get_agent_health))
         .with_state(state)
         .layer(TraceLayer::new_for_http())
 }
@@ -35,8 +35,8 @@ pub fn create_client_app(state: AppState) -> Router {
 pub fn create_agent_app(state: AppState) -> Router {
     Router::new()
         .route("/agent/register", post(register_agent))
-        .route("/agent/{name}/config", post(update_agent_config))
-        .route("/agent/{name}/health", post(update_agent_health))
+        .route("/agent/{id}/config", post(update_agent_config))
+        .route("/agent/{id}/health", post(update_agent_health))
         .with_state(state.clone())
         .layer(axum::middleware::from_fn_with_state(
             state,
@@ -84,9 +84,9 @@ async fn list_agents(State(state): State<AppState>) -> Json<Vec<Agent>> {
 
 async fn get_agent(
     State(state): State<AppState>,
-    Path(name): Path<String>,
+    Path(id): Path<String>,
 ) -> Result<Json<Agent>, StatusCode> {
-    match state.agent_store.get(&name).await {
+    match state.agent_store.get(&id).await {
         Some(agent) => Ok(Json(agent)),
         None => Err(StatusCode::NOT_FOUND),
     }
@@ -94,11 +94,11 @@ async fn get_agent(
 
 async fn get_agent_config(
     State(state): State<AppState>,
-    Path(name): Path<String>,
+    Path(id): Path<String>,
 ) -> Result<Json<AgentConfig>, StatusCode> {
     let agent = state
         .agent_store
-        .get(&name)
+        .get(&id)
         .await
         .ok_or(StatusCode::NOT_FOUND)?;
 
@@ -110,11 +110,11 @@ async fn get_agent_config(
 
 async fn get_agent_health(
     State(state): State<AppState>,
-    Path(name): Path<String>,
+    Path(id): Path<String>,
 ) -> Result<Json<HealthStatus>, StatusCode> {
     let agent = state
         .agent_store
-        .get(&name)
+        .get(&id)
         .await
         .ok_or(StatusCode::NOT_FOUND)?;
 
@@ -127,17 +127,22 @@ async fn get_agent_health(
 // Agent-facing handlers (mTLS required)
 #[derive(serde::Deserialize)]
 struct RegisterAgentRequest {
-    name: String,
+    id: String,
+    secret: String,
 }
 
 async fn register_agent(
     State(state): State<AppState>,
     Json(payload): Json<RegisterAgentRequest>,
 ) -> Result<Json<Agent>, StatusCode> {
-    match state.agent_store.add_agent(payload.name.clone()).await {
+    match state
+        .agent_store
+        .add_agent(payload.id.clone(), payload.secret.clone())
+        .await
+    {
         Ok(()) => {
-            let agent = state.agent_store.get(&payload.name).await.unwrap();
-            info!("Agent '{}' registered successfully", agent.name);
+            let agent = state.agent_store.get(&payload.id).await.unwrap();
+            info!("Agent '{}' registered successfully", agent.id);
             Ok(Json(agent))
         }
         Err(_) => Err(StatusCode::CONFLICT),
@@ -146,30 +151,30 @@ async fn register_agent(
 
 async fn update_agent_config(
     State(state): State<AppState>,
-    Path(name): Path<String>,
+    Path(id): Path<String>,
     Json(config): Json<AgentConfig>,
 ) -> Result<Json<AgentConfig>, StatusCode> {
     // Verify agent exists
-    if state.agent_store.get(&name).await.is_none() {
+    if state.agent_store.get(&id).await.is_none() {
         return Err(StatusCode::NOT_FOUND);
     }
 
-    state.agent_store.update_config(&name, config.clone()).await;
-    info!("Config updated for agent {}", name);
+    state.agent_store.update_config(&id, config.clone()).await;
+    info!("Config updated for agent {}", id);
     Ok(Json(config))
 }
 
 async fn update_agent_health(
     State(state): State<AppState>,
-    Path(name): Path<String>,
+    Path(id): Path<String>,
     Json(health): Json<HealthStatus>,
 ) -> Result<Json<HealthStatus>, StatusCode> {
     // Verify agent exists
-    if state.agent_store.get(&name).await.is_none() {
+    if state.agent_store.get(&id).await.is_none() {
         return Err(StatusCode::NOT_FOUND);
     }
 
-    state.agent_store.update_health(&name, health.clone()).await;
-    info!("Health updated for agent {}", name);
+    state.agent_store.update_health(&id, health.clone()).await;
+    info!("Health updated for agent {}", id);
     Ok(Json(health))
 }

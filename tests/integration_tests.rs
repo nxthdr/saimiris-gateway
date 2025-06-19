@@ -1,9 +1,29 @@
-use chrono::Utc;
-use saimiris_gateway::agent::{AgentConfig, HealthStatus, RateLimitingMethod};
+use axum_test::TestServer;
+use saimiris_gateway::agent::{AgentConfig, HealthStatus};
+use saimiris_gateway::{AppState, agent::AgentStore, create_app};
+use serde_json::json;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
-#[test]
-fn test_agent_config_serialization() {
+#[tokio::test]
+async fn test_agent_api_scenario() {
+    let agent_store = AgentStore::new();
+    let state = AppState {
+        agent_store,
+        agent_key: "test-key".to_string(),
+    };
+    let app = create_app(state.clone());
+    let server = TestServer::new(app).unwrap();
+
+    // 1. Register agent
+    let register_body = json!({"id": "agent1", "secret": "s3cr3t"});
+    let response = server
+        .post("/agent-api/agent/register")
+        .add_header("authorization", "Bearer test-key")
+        .json(&register_body)
+        .await;
+    assert_eq!(response.status_code(), 200);
+
+    // 2. Update config
     let config = AgentConfig {
         batch_size: 100,
         instance_id: 1,
@@ -16,40 +36,38 @@ fn test_agent_config_serialization() {
         src_ipv6_addr: Some("::1".parse::<Ipv6Addr>().unwrap()),
         packets: 1000,
         probing_rate: 100,
-        rate_limiting_method: RateLimitingMethod::None,
+        rate_limiting_method: "None".to_string(),
     };
+    let response = server
+        .post("/agent-api/agent/agent1/config")
+        .add_header("authorization", "Bearer test-key")
+        .json(&config)
+        .await;
+    assert_eq!(response.status_code(), 200);
 
-    let serialized = serde_json::to_string(&config).unwrap();
-    let deserialized: AgentConfig = serde_json::from_str(&serialized).unwrap();
-
-    assert_eq!(config.batch_size, deserialized.batch_size);
-    assert_eq!(config.instance_id, deserialized.instance_id);
-    assert_eq!(config.dry_run, deserialized.dry_run);
-    assert_eq!(config.min_ttl, deserialized.min_ttl);
-    assert_eq!(config.max_ttl, deserialized.max_ttl);
-    assert_eq!(config.integrity_check, deserialized.integrity_check);
-    assert_eq!(config.interface, deserialized.interface);
-    assert_eq!(config.src_ipv4_addr, deserialized.src_ipv4_addr);
-    assert_eq!(config.src_ipv6_addr, deserialized.src_ipv6_addr);
-    assert_eq!(config.packets, deserialized.packets);
-    assert_eq!(config.probing_rate, deserialized.probing_rate);
-    assert_eq!(
-        config.rate_limiting_method,
-        deserialized.rate_limiting_method
-    );
-}
-
-#[test]
-fn test_health_status_serialization() {
+    // 3. Update health
     let health = HealthStatus {
         healthy: true,
-        last_check: Utc::now(),
+        last_check: chrono::Utc::now(),
         message: Some("All systems operational".to_string()),
     };
+    let response = server
+        .post("/agent-api/agent/agent1/health")
+        .add_header("authorization", "Bearer test-key")
+        .json(&health)
+        .await;
+    assert_eq!(response.status_code(), 200);
 
-    let serialized = serde_json::to_string(&health).unwrap();
-    let deserialized: HealthStatus = serde_json::from_str(&serialized).unwrap();
+    // 4. Fetch list of agents
+    let response = server.get("/api/agents").await;
+    assert_eq!(response.status_code(), 200);
+    let agents: Vec<serde_json::Value> = response.json();
+    assert_eq!(agents.len(), 1);
+    assert_eq!(agents[0]["id"], "agent1");
 
-    assert_eq!(health.healthy, deserialized.healthy);
-    assert_eq!(health.message, deserialized.message);
+    // 5. Fetch agent by id
+    let response = server.get("/api/agent/agent1").await;
+    assert_eq!(response.status_code(), 200);
+    let agent: serde_json::Value = response.json();
+    assert_eq!(agent["id"], "agent1");
 }

@@ -1,4 +1,3 @@
-pub use caracat::rate_limiter::RateLimitingMethod;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
@@ -6,7 +5,8 @@ use tokio::sync::RwLock;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Agent {
-    pub name: String,
+    pub id: String,
+    pub secret: String,
     pub status: AgentStatus,
     pub config: Option<AgentConfig>,
     pub health: Option<HealthStatus>,
@@ -19,57 +19,6 @@ pub enum AgentStatus {
     Active,
     Inactive,
     Unknown,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct RateLimitingMethodSerde(pub RateLimitingMethod);
-
-impl Serialize for RateLimitingMethodSerde {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        let s = match self.0 {
-            RateLimitingMethod::None => "None",
-            RateLimitingMethod::Active => "Active",
-            RateLimitingMethod::Auto => "Auto",
-            RateLimitingMethod::Sleep => "Sleep",
-        };
-        serializer.serialize_str(s)
-    }
-}
-
-impl<'de> Deserialize<'de> for RateLimitingMethodSerde {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        let method = match s.as_str() {
-            "None" => RateLimitingMethod::None,
-            "Active" => RateLimitingMethod::Active,
-            "Auto" => RateLimitingMethod::Auto,
-            "Sleep" => RateLimitingMethod::Sleep,
-            other => {
-                return Err(serde::de::Error::custom(format!(
-                    "Unknown rate limiting method: {}",
-                    other
-                )));
-            }
-        };
-        Ok(RateLimitingMethodSerde(method))
-    }
-}
-
-impl From<RateLimitingMethod> for RateLimitingMethodSerde {
-    fn from(m: RateLimitingMethod) -> Self {
-        RateLimitingMethodSerde(m)
-    }
-}
-impl From<RateLimitingMethodSerde> for RateLimitingMethod {
-    fn from(m: RateLimitingMethodSerde) -> Self {
-        m.0
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -96,12 +45,8 @@ pub struct AgentConfig {
     pub packets: u64,
     #[serde(default = "default_caracat_probing_rate")]
     pub probing_rate: u64,
-    #[serde(
-        default = "default_caracat_rate_limiting_method",
-        serialize_with = "serialize_rlm",
-        deserialize_with = "deserialize_rlm"
-    )]
-    pub rate_limiting_method: RateLimitingMethod,
+    #[serde(default = "default_caracat_rate_limiting_method")]
+    pub rate_limiting_method: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -123,27 +68,34 @@ impl AgentStore {
         }
     }
 
-    pub async fn add_agent(&self, name: String) -> Result<(), String> {
+    pub async fn add_agent(&self, id: String, secret: String) -> Result<(), String> {
         let now = Utc::now();
         let mut agents = self.agents.write().await;
-        if agents.values().any(|a| a.name == name) {
-            return Err(format!("Agent with name '{}' already exists", name));
+        if let Some(existing) = agents.get(&id) {
+            if existing.secret == secret {
+                // Already registered with same secret, allow idempotent registration
+                return Ok(());
+            } else {
+                // Conflict: id taken by another agent
+                return Err(format!("Agent with id '{}' already exists", id));
+            }
         }
         let agent = Agent {
-            name,
+            id: id.clone(),
+            secret,
             status: AgentStatus::Unknown,
             config: None,
             health: None,
             created_at: now,
             updated_at: now,
         };
-        agents.insert(agent.name.clone(), agent);
+        agents.insert(id, agent);
         Ok(())
     }
 
-    pub async fn get(&self, name: &str) -> Option<Agent> {
+    pub async fn get(&self, id: &str) -> Option<Agent> {
         let agents = self.agents.read().await;
-        agents.get(name).cloned()
+        agents.get(id).cloned()
     }
 
     pub async fn list_all(&self) -> Vec<Agent> {
@@ -151,17 +103,17 @@ impl AgentStore {
         agents.values().cloned().collect()
     }
 
-    pub async fn update_config(&self, name: &str, config: AgentConfig) {
+    pub async fn update_config(&self, id: &str, config: AgentConfig) {
         let mut agents = self.agents.write().await;
-        if let Some(agent) = agents.get_mut(name) {
+        if let Some(agent) = agents.get_mut(id) {
             agent.config = Some(config);
             agent.updated_at = Utc::now();
         }
     }
 
-    pub async fn update_health(&self, name: &str, health: HealthStatus) {
+    pub async fn update_health(&self, id: &str, health: HealthStatus) {
         let mut agents = self.agents.write().await;
-        if let Some(agent) = agents.get_mut(name) {
+        if let Some(agent) = agents.get_mut(id) {
             agent.health = Some(health.clone());
             agent.status = if health.healthy {
                 AgentStatus::Active
@@ -172,9 +124,9 @@ impl AgentStore {
         }
     }
 
-    pub async fn remove_agent(&self, name: &str) -> bool {
+    pub async fn remove_agent(&self, id: &str) -> bool {
         let mut agents = self.agents.write().await;
-        agents.remove(name).is_some()
+        agents.remove(id).is_some()
     }
 }
 
@@ -193,77 +145,55 @@ fn default_caracat_packets() -> u64 {
 fn default_caracat_probing_rate() -> u64 {
     1000
 }
-fn default_caracat_rate_limiting_method() -> RateLimitingMethod {
-    RateLimitingMethod::None
-}
-
-fn serialize_rlm<S>(rlm: &RateLimitingMethod, serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: serde::Serializer,
-{
-    RateLimitingMethodSerde::from(rlm.clone()).serialize(serializer)
-}
-
-fn deserialize_rlm<'de, D>(deserializer: D) -> Result<RateLimitingMethod, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    RateLimitingMethodSerde::deserialize(deserializer).map(|w| w.0)
+fn default_caracat_rate_limiting_method() -> String {
+    "None".to_string()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json;
-
-    #[test]
-    fn test_rate_limiting_method_serialization() {
-        let method = RateLimitingMethod::Active;
-        let wrapper = RateLimitingMethodSerde(method);
-        let serialized = serde_json::to_string(&wrapper).unwrap();
-        assert_eq!(serialized, "\"Active\"");
-        let deserialized: RateLimitingMethodSerde = serde_json::from_str(&serialized).unwrap();
-        assert_eq!(deserialized.0, RateLimitingMethod::Active);
-    }
-
-    #[test]
-    fn test_rate_limiting_method_serialization_none() {
-        let method = RateLimitingMethod::None;
-        let wrapper = RateLimitingMethodSerde(method);
-        let serialized = serde_json::to_string(&wrapper).unwrap();
-        assert_eq!(serialized, "\"None\"");
-        let deserialized: RateLimitingMethodSerde = serde_json::from_str(&serialized).unwrap();
-        assert_eq!(deserialized.0, RateLimitingMethod::None);
-    }
 
     #[tokio::test]
     async fn test_agent_store_add_and_get() {
         let store = AgentStore::new();
-        store.add_agent("test-agent".to_string()).await.unwrap();
+        store
+            .add_agent("test-id".to_string(), "secret1".to_string())
+            .await
+            .unwrap();
 
-        let agent = store.get("test-agent").await.unwrap();
-        assert_eq!(agent.name, "test-agent");
+        let agent = store.get("test-id").await.unwrap();
+        assert_eq!(agent.id, "test-id");
+        assert_eq!(agent.secret, "secret1");
         assert!(matches!(agent.status, AgentStatus::Unknown));
     }
 
     #[tokio::test]
     async fn test_agent_store_list_all() {
         let store = AgentStore::new();
-        store.add_agent("agent1".to_string()).await.unwrap();
-        store.add_agent("agent2".to_string()).await.unwrap();
+        store
+            .add_agent("agent1".to_string(), "s1".to_string())
+            .await
+            .unwrap();
+        store
+            .add_agent("agent2".to_string(), "s2".to_string())
+            .await
+            .unwrap();
 
         let agents = store.list_all().await;
         assert_eq!(agents.len(), 2);
 
-        let agent_names: Vec<String> = agents.iter().map(|a| a.name.clone()).collect();
-        assert!(agent_names.contains(&"agent1".to_string()));
-        assert!(agent_names.contains(&"agent2".to_string()));
+        let agent_ids: Vec<String> = agents.iter().map(|a| a.id.clone()).collect();
+        assert!(agent_ids.contains(&"agent1".to_string()));
+        assert!(agent_ids.contains(&"agent2".to_string()));
     }
 
     #[tokio::test]
     async fn test_agent_store_update_config() {
         let store = AgentStore::new();
-        store.add_agent("test-agent".to_string()).await.unwrap();
+        store
+            .add_agent("test-id".to_string(), "secret1".to_string())
+            .await
+            .unwrap();
 
         let config = AgentConfig {
             batch_size: 100,
@@ -277,12 +207,12 @@ mod tests {
             src_ipv6_addr: Some("::1".parse().unwrap()),
             packets: 1000,
             probing_rate: 100,
-            rate_limiting_method: RateLimitingMethod::None,
+            rate_limiting_method: "None".to_string(),
         };
 
-        store.update_config("test-agent", config.clone()).await;
+        store.update_config("test-id", config.clone()).await;
 
-        let agent = store.get("test-agent").await.unwrap();
+        let agent = store.get("test-id").await.unwrap();
         assert!(agent.config.is_some());
         let agent_config = agent.config.unwrap();
         assert_eq!(agent_config.batch_size, 100);
@@ -299,13 +229,16 @@ mod tests {
         assert_eq!(agent_config.src_ipv6_addr, Some("::1".parse().unwrap()));
         assert_eq!(agent_config.packets, 1000);
         assert_eq!(agent_config.probing_rate, 100);
-        assert_eq!(agent_config.rate_limiting_method, RateLimitingMethod::None);
+        assert_eq!(agent_config.rate_limiting_method, "None");
     }
 
     #[tokio::test]
     async fn test_agent_store_update_health() {
         let store = AgentStore::new();
-        store.add_agent("test-agent".to_string()).await.unwrap();
+        store
+            .add_agent("test-id".to_string(), "secret1".to_string())
+            .await
+            .unwrap();
 
         let health = HealthStatus {
             healthy: true,
@@ -313,9 +246,9 @@ mod tests {
             message: None,
         };
 
-        store.update_health("test-agent", health).await;
+        store.update_health("test-id", health).await;
 
-        let agent = store.get("test-agent").await.unwrap();
+        let agent = store.get("test-id").await.unwrap();
         assert!(agent.health.is_some());
         assert!(agent.health.unwrap().healthy);
         assert!(matches!(agent.status, AgentStatus::Active));
@@ -324,7 +257,10 @@ mod tests {
     #[tokio::test]
     async fn test_agent_store_update_health_unhealthy() {
         let store = AgentStore::new();
-        store.add_agent("test-agent".to_string()).await.unwrap();
+        store
+            .add_agent("test-id".to_string(), "secret1".to_string())
+            .await
+            .unwrap();
 
         let health = HealthStatus {
             healthy: false,
@@ -332,9 +268,9 @@ mod tests {
             message: Some("Service unavailable".to_string()),
         };
 
-        store.update_health("test-agent", health).await;
+        store.update_health("test-id", health).await;
 
-        let agent = store.get("test-agent").await.unwrap();
+        let agent = store.get("test-id").await.unwrap();
         assert!(agent.health.is_some());
         assert!(!agent.health.unwrap().healthy);
         assert!(matches!(agent.status, AgentStatus::Inactive));
@@ -343,30 +279,33 @@ mod tests {
     #[tokio::test]
     async fn test_agent_store_remove_agent() {
         let store = AgentStore::new();
-        store.add_agent("test-agent".to_string()).await.unwrap();
+        store
+            .add_agent("test-id".to_string(), "secret1".to_string())
+            .await
+            .unwrap();
 
-        let removed = store.remove_agent("test-agent").await;
+        let removed = store.remove_agent("test-id").await;
         assert!(removed);
 
-        let agent = store.get("test-agent").await;
+        let agent = store.get("test-id").await;
         assert!(agent.is_none());
     }
 
     #[tokio::test]
     async fn test_agent_store_get_nonexistent() {
         let store = AgentStore::new();
-        let fake_name = "nonexistent-agent";
+        let fake_id = "nonexistent-agent";
 
-        let agent = store.get(fake_name).await;
+        let agent = store.get(fake_id).await;
         assert!(agent.is_none());
     }
 
     #[tokio::test]
     async fn test_agent_store_remove_nonexistent() {
         let store = AgentStore::new();
-        let fake_name = "nonexistent-agent";
+        let fake_id = "nonexistent-agent";
 
-        let removed = store.remove_agent(fake_name).await;
+        let removed = store.remove_agent(fake_id).await;
         assert!(!removed);
     }
 }
