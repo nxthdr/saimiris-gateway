@@ -10,6 +10,10 @@ use saimiris_gateway::{AppState, agent::AgentStore, create_app};
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
 pub struct Cli {
+    /// API listen address (e.g. 0.0.0.0:8080 or [::]:8080)
+    #[arg(long = "address", default_value = "0.0.0.0:8080")]
+    pub address: String,
+
     /// Agent key for agent authentication
     #[arg(long = "agent-key")]
     pub agent_key: String,
@@ -45,7 +49,7 @@ async fn main() -> anyhow::Result<()> {
 
     let app = create_app(state);
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
+    let addr: SocketAddr = cli.address.parse()?;
     info!("Starting server on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;

@@ -20,7 +20,6 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/target/release/saimiris-gateway /app/saimiris-gateway
 
-EXPOSE 4000
 EXPOSE 8080
 
 ENTRYPOINT [ "/app/saimiris-gateway" ]
