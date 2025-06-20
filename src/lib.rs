@@ -95,7 +95,7 @@ async fn get_agent(
 async fn get_agent_config(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> Result<Json<AgentConfig>, StatusCode> {
+) -> Result<Json<Vec<AgentConfig>>, StatusCode> {
     let agent = state
         .agent_store
         .get(&id)
@@ -152,8 +152,8 @@ async fn register_agent(
 async fn update_agent_config(
     State(state): State<AppState>,
     Path(id): Path<String>,
-    Json(config): Json<AgentConfig>,
-) -> Result<Json<AgentConfig>, StatusCode> {
+    Json(config): Json<Vec<AgentConfig>>,
+) -> Result<Json<Vec<AgentConfig>>, StatusCode> {
     // Verify agent exists
     if state.agent_store.get(&id).await.is_none() {
         return Err(StatusCode::NOT_FOUND);

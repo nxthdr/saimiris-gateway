@@ -24,24 +24,40 @@ async fn test_agent_api_scenario() {
     assert_eq!(response.status_code(), 200);
 
     // 2. Update config
-    let config = AgentConfig {
-        batch_size: 100,
-        instance_id: 1,
-        dry_run: false,
-        min_ttl: Some(10),
-        max_ttl: Some(255),
-        integrity_check: true,
-        interface: "eth0".to_string(),
-        src_ipv4_addr: Some("192.168.1.1".parse::<Ipv4Addr>().unwrap()),
-        src_ipv6_addr: Some("::1".parse::<Ipv6Addr>().unwrap()),
-        packets: 1000,
-        probing_rate: 100,
-        rate_limiting_method: "None".to_string(),
-    };
+    let configs = vec![
+        AgentConfig {
+            batch_size: 100,
+            instance_id: 1,
+            dry_run: false,
+            min_ttl: Some(10),
+            max_ttl: Some(255),
+            integrity_check: true,
+            interface: "eth0".to_string(),
+            src_ipv4_addr: Some("192.168.1.1".parse::<Ipv4Addr>().unwrap()),
+            src_ipv6_addr: Some("::1".parse::<Ipv6Addr>().unwrap()),
+            packets: 1000,
+            probing_rate: 100,
+            rate_limiting_method: "None".to_string(),
+        },
+        AgentConfig {
+            batch_size: 200,
+            instance_id: 2,
+            dry_run: true,
+            min_ttl: Some(20),
+            max_ttl: Some(200),
+            integrity_check: false,
+            interface: "eth1".to_string(),
+            src_ipv4_addr: Some("192.168.1.2".parse::<Ipv4Addr>().unwrap()),
+            src_ipv6_addr: Some("::2".parse::<Ipv6Addr>().unwrap()),
+            packets: 2000,
+            probing_rate: 200,
+            rate_limiting_method: "auto".to_string(),
+        },
+    ];
     let response = server
         .post("/agent-api/agent/agent1/config")
         .add_header("authorization", "Bearer test-key")
-        .json(&config)
+        .json(&configs)
         .await;
     assert_eq!(response.status_code(), 200);
 
@@ -70,4 +86,12 @@ async fn test_agent_api_scenario() {
     assert_eq!(response.status_code(), 200);
     let agent: serde_json::Value = response.json();
     assert_eq!(agent["id"], "agent1");
+
+    // 6. Fetch agent config
+    let response = server.get("/api/agent/agent1/config").await;
+    assert_eq!(response.status_code(), 200);
+    let fetched_configs: Vec<AgentConfig> = response.json();
+    assert_eq!(fetched_configs.len(), 2);
+    assert_eq!(fetched_configs[0].batch_size, 100);
+    assert_eq!(fetched_configs[1].batch_size, 200);
 }

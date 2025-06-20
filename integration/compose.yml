@@ -13,7 +13,7 @@ services:
       - "8080:8080"
 
   agent:
-    image: ghcr.io/nxthdr/saimiris:main
+    build: ../../saimiris
     command: agent --config /config/agent.yml
     depends_on:
       - redpanda
