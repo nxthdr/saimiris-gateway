@@ -1,8 +1,9 @@
 pub mod agent;
+pub mod jwt;
 
 use axum::{
     Router,
-    extract::{Path, Request, State},
+    extract::{Extension, Path, Request, State},
     http::StatusCode,
     middleware::Next,
     response::Json,
@@ -20,13 +21,22 @@ pub struct AppState {
     pub agent_key: String,
 }
 
-// Client-facing API (regular REST - no mTLS required)
+// Client-facing API
 pub fn create_client_app(state: AppState) -> Router {
+    // Create a protected router for endpoints that require authentication
+    let protected_routes = Router::new()
+        .route("/user/credits", get(get_user_credits))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            jwt::jwt_middleware,
+        ));
+
     Router::new()
         .route("/agents", get(list_agents))
         .route("/agent/{id}", get(get_agent))
         .route("/agent/{id}/config", get(get_agent_config))
         .route("/agent/{id}/health", get(get_agent_health))
+        .merge(protected_routes)
         .with_state(state)
         .layer(TraceLayer::new_for_http())
 }
@@ -82,6 +92,15 @@ async fn list_agents(State(state): State<AppState>) -> Json<Vec<Agent>> {
     Json(agents)
 }
 
+async fn get_user_credits(
+    Extension(_auth_info): Extension<jwt::AuthInfo>,
+) -> Json<serde_json::Value> {
+    // For now just return a static
+    Json(serde_json::json!({
+        "credits": 10_000,
+    }))
+}
+
 async fn get_agent(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -124,7 +143,7 @@ async fn get_agent_health(
     }
 }
 
-// Agent-facing handlers (mTLS required)
+// Agent-facing handlers
 #[derive(serde::Deserialize)]
 struct RegisterAgentRequest {
     id: String,

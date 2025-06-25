@@ -1,9 +1,10 @@
 use anyhow::Result;
 use clap_verbosity_flag::{InfoLevel, Verbosity};
-use std::net::SocketAddr;
-use tracing::info;
+use std::{env, net::SocketAddr, path::Path};
+use tracing::{info, warn};
 
 use clap::Parser;
+use dotenv;
 use saimiris_gateway::{AppState, agent::AgentStore, create_app};
 
 /// Command line arguments for the gateway
@@ -36,6 +37,25 @@ fn set_tracing(cli: &Cli) -> Result<()> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Load environment variables from the appropriate .env file
+    let env_file = match env::var("ENVIRONMENT")
+        .unwrap_or_else(|_| "development".to_string())
+        .as_str()
+    {
+        "production" => ".env.production",
+        _ => ".env.development",
+    };
+
+    if Path::new(env_file).exists() {
+        dotenv::from_path(env_file).ok();
+        info!("Loaded environment from {}", env_file);
+    } else {
+        warn!(
+            "Environment file {} not found. Using default values.",
+            env_file
+        );
+    }
+
     let cli = Cli::parse();
     set_tracing(&cli)?;
 

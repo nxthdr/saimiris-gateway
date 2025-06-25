@@ -19,7 +19,11 @@ RUN apt-get update \
     && apt-get install -y openssl \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/target/release/saimiris-gateway /app/saimiris-gateway
+COPY .env.production /app/.env.production
 
+WORKDIR /app
 EXPOSE 8080
 
+# Set environment to production
+ENV ENVIRONMENT=production
 ENTRYPOINT [ "/app/saimiris-gateway" ]
