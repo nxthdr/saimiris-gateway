@@ -16,7 +16,8 @@ RUN cargo build --release --bin saimiris-gateway
 
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update \
-    && apt-get install -y openssl \
+    && apt-get install -y openssl ca-certificates \
+    && update-ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/target/release/saimiris-gateway /app/saimiris-gateway
 COPY .env.production /app/.env.production

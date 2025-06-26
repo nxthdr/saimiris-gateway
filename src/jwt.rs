@@ -16,28 +16,26 @@ use tracing::{debug, warn};
 use crate::AppState;
 
 // JWT configuration functions to read from environment variables
-pub fn jwks_uri() -> String {
-    env::var("LOGTO_JWKS_URI").unwrap_or_else(|_| {
-        // Default fallback for development
-        "https://3qo5br.logto.app/oidc/jwks".to_string()
+pub fn jwks_uri() -> Result<String, AuthorizationError> {
+    env::var("LOGTO_JWKS_URI").map_err(|_| {
+        AuthorizationError::with_status("LOGTO_JWKS_URI environment variable is not set", 500)
     })
 }
 
-pub fn issuer() -> String {
-    env::var("LOGTO_ISSUER").unwrap_or_else(|_| {
-        // Default fallback for development
-        "https://3qo5br.logto.app/oidc".to_string()
+pub fn issuer() -> Result<String, AuthorizationError> {
+    env::var("LOGTO_ISSUER").map_err(|_| {
+        AuthorizationError::with_status("LOGTO_ISSUER environment variable is not set", 500)
     })
 }
 
 // For configuring HTTP client with reasonable timeouts
 fn create_http_client() -> reqwest::Client {
     reqwest::Client::builder()
-        .timeout(Duration::from_secs(5)) // Total request timeout
-        .connect_timeout(Duration::from_secs(3)) // Connection timeout
+        .timeout(Duration::from_secs(10))
+        .connect_timeout(Duration::from_secs(5))
         .build()
-        .unwrap_or_else(|_| {
-            warn!("Failed to build custom HTTP client, using default");
+        .unwrap_or_else(|e| {
+            warn!("Failed to build HTTP client: {}, using default instead", e);
             reqwest::Client::new()
         })
 }
@@ -189,14 +187,14 @@ impl JwtValidator {
     }
 
     async fn fetch_jwks() -> Result<HashMap<String, DecodingKey>, AuthorizationError> {
-        let jwks_uri = jwks_uri();
+        let jwks_uri = jwks_uri()?;
         let client = create_http_client();
 
         debug!("Fetching JWKS from {}", jwks_uri);
 
-        // Simple, single attempt fetch strategy
+        // Simple fetch with basic error handling
         let response = client.get(&jwks_uri).send().await.map_err(|e| {
-            warn!("Failed to fetch JWKS: {}", e);
+            warn!("JWKS fetch error: {}", e);
             AuthorizationError::with_status(
                 format!("Failed to fetch JWKS from {}: {}", jwks_uri, e),
                 401,
@@ -306,7 +304,7 @@ impl JwtValidator {
         };
 
         let mut validation = Validation::new(algorithm);
-        validation.set_issuer(&[&issuer()]);
+        validation.set_issuer(&[&issuer()?]);
         validation.validate_aud = false; // We'll verify audience manually
 
         let token_data = decode::<Value>(token, key, &validation)

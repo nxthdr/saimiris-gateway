@@ -61,6 +61,17 @@ async fn main() -> anyhow::Result<()> {
 
     let agent_store = AgentStore::new();
 
+    // Display the JWT-related environment variables
+    match env::var("LOGTO_JWKS_URI") {
+        Ok(uri) => info!("LOGTO_JWKS_URI is set to: {}", uri),
+        Err(_) => warn!("LOGTO_JWKS_URI is not set!"),
+    }
+
+    match env::var("LOGTO_ISSUER") {
+        Ok(issuer) => info!("LOGTO_ISSUER is set to: {}", issuer),
+        Err(_) => warn!("LOGTO_ISSUER is not set!"),
+    }
+
     // Create app state with agent key for authentication
     let state = AppState {
         agent_store,
