@@ -23,7 +23,7 @@ uuid = { version = "1.7", features = ["v4", "serde"] }
 
 [dev-dependencies]
 axum-test = "17.0"
-criterion = "0.5"
+criterion = "0.6"
 
 [[bench]]
 name = "deserialization_benchmark"
