@@ -95,9 +95,10 @@ async fn list_agents(State(state): State<AppState>) -> Json<Vec<Agent>> {
 async fn get_user_credits(
     Extension(_auth_info): Extension<jwt::AuthInfo>,
 ) -> Json<serde_json::Value> {
-    // For now, we just return a constant number
+    // For now, we just return constant numbers
     Json(serde_json::json!({
-        "credits": 10_000,
+        "used": 0,
+        "limit": 10_000,
     }))
 }
 
