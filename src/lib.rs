@@ -11,7 +11,7 @@ use axum::{
     routing::{get, post},
 };
 use tower_http::trace::TraceLayer;
-use tracing::info;
+use tracing::{debug, warn};
 
 use agent::{Agent, AgentConfig, AgentStore, HealthStatus};
 
@@ -80,7 +80,7 @@ async fn validate_agent_key(
     match auth_header {
         Some(key) if key == state.agent_key => Ok(next.run(request).await),
         _ => {
-            info!("Unauthorized access attempt to agent API");
+            warn!("Unauthorized access attempt to agent API");
             Err(StatusCode::UNAUTHORIZED)
         }
     }
@@ -161,7 +161,7 @@ async fn register_agent(
     {
         Ok(()) => {
             let agent = state.agent_store.get(&payload.id).await.unwrap();
-            info!("Agent '{}' registered successfully", agent.id);
+            debug!("Agent '{}' registered successfully", agent.id);
             Ok(Json(agent))
         }
         Err(_) => Err(StatusCode::CONFLICT),
@@ -179,7 +179,7 @@ async fn update_agent_config(
     }
 
     state.agent_store.update_config(&id, config.clone()).await;
-    info!("Config updated for agent {}", id);
+    debug!("Config updated for agent {}", id);
     Ok(Json(config))
 }
 
@@ -194,6 +194,6 @@ async fn update_agent_health(
     }
 
     state.agent_store.update_health(&id, health.clone()).await;
-    info!("Health updated for agent {}", id);
+    debug!("Health updated for agent {}", id);
     Ok(Json(health))
 }
