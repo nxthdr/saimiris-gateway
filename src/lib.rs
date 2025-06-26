@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod jwt;
+pub mod probe;
 
 use axum::{
     Router,
@@ -14,6 +15,8 @@ use tower_http::trace::TraceLayer;
 use tracing::{debug, warn};
 
 use agent::{Agent, AgentConfig, AgentStore, HealthStatus};
+use probe::{SubmitProbesRequest, SubmitProbesResponse};
+use uuid::Uuid;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -26,6 +29,7 @@ pub fn create_client_app(state: AppState) -> Router {
     // Create a protected router for endpoints that require authentication
     let protected_routes = Router::new()
         .route("/user/credits", get(get_user_credits))
+        .route("/probes", post(submit_probes))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             jwt::jwt_middleware,
@@ -197,4 +201,59 @@ async fn update_agent_health(
     state.agent_store.update_health(&id, health.clone()).await;
     debug!("Health updated for agent {}", id);
     Ok(Json(health))
+}
+
+// Handler for submitting probes
+async fn submit_probes(
+    Extension(auth_info): Extension<jwt::AuthInfo>,
+    State(state): State<AppState>,
+    Json(request): Json<SubmitProbesRequest>,
+) -> Result<Json<SubmitProbesResponse>, StatusCode> {
+    // Additional validation if needed (basic validation happens during deserialization)
+    if request.probes.is_empty() {
+        debug!("User {} submitted an empty probe list", auth_info.sub);
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    // Generate a unique measurement ID
+    let measurement_id = Uuid::new_v4().to_string();
+
+    let mut assigned_agents = Vec::new();
+
+    // Validate that requested agents exist
+    for agent_meta in &request.metadata {
+        if let Some(agent) = state.agent_store.get(&agent_meta.id).await {
+            // Only include healthy agents
+            if let Some(health) = &agent.health {
+                if health.healthy {
+                    assigned_agents.push(agent_meta.id.clone());
+                }
+            }
+        }
+    }
+
+    // If no valid agents were found, return an error
+    if assigned_agents.is_empty() {
+        debug!("No valid agents found for user {}", auth_info.sub);
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    // Here you would queue the probes for the assigned agents
+    // This would typically involve storing the probes in a database
+    // and scheduling them to be run by the agents
+
+    // For now, we'll just log the submission
+    debug!(
+        "User {} submitted {} probes for measurement {}, assigned to {} agents",
+        auth_info.sub,
+        request.probes.len(),
+        measurement_id,
+        assigned_agents.len()
+    );
+
+    Ok(Json(SubmitProbesResponse {
+        measurement_id,
+        accepted_probes: request.probes.len(),
+        assigned_agents,
+    }))
 }
