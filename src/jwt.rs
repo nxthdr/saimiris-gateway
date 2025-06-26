@@ -6,10 +6,12 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{collections::HashMap, env, fmt};
-use tracing;
+use std::{collections::HashMap, env, fmt, sync::Arc, time::Duration};
+use tokio::sync::RwLock;
+use tracing::{debug, warn};
 
 use crate::AppState;
 
@@ -27,6 +29,29 @@ pub fn issuer() -> String {
         "https://3qo5br.logto.app/oidc".to_string()
     })
 }
+
+// For configuring HTTP client with reasonable timeouts
+fn create_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(5)) // Total request timeout
+        .connect_timeout(Duration::from_secs(3)) // Connection timeout
+        .build()
+        .unwrap_or_else(|_| {
+            warn!("Failed to build custom HTTP client, using default");
+            reqwest::Client::new()
+        })
+}
+
+// A cached JWKS validator that's shared across requests
+static JWKS_CACHE: Lazy<Arc<RwLock<Option<JwtValidator>>>> =
+    Lazy::new(|| Arc::new(RwLock::new(None)));
+
+// How long to cache JWKS before refreshing (12 hours)
+const JWKS_CACHE_DURATION: Duration = Duration::from_secs(12 * 60 * 60);
+
+// Timestamp of last JWKS refresh
+static LAST_JWKS_REFRESH: Lazy<Arc<RwLock<Option<std::time::Instant>>>> =
+    Lazy::new(|| Arc::new(RwLock::new(None)));
 
 // For testing purposes
 pub fn bypass_jwt_validation() -> bool {
@@ -113,6 +138,7 @@ pub fn extract_bearer_token(authorization: Option<&str>) -> Result<&str, Authori
     Ok(&auth_header[7..]) // Remove 'Bearer ' prefix
 }
 
+#[derive(Clone)]
 pub struct JwtValidator {
     jwks: HashMap<String, DecodingKey>,
 }
@@ -123,20 +149,79 @@ impl JwtValidator {
         Ok(Self { jwks })
     }
 
+    pub async fn get_or_create() -> Result<Self, AuthorizationError> {
+        // Check if we have a cached validator that's still fresh
+        let should_refresh = {
+            let last_refresh = LAST_JWKS_REFRESH.read().await;
+            match *last_refresh {
+                Some(time) => time.elapsed() > JWKS_CACHE_DURATION,
+                None => true,
+            }
+        };
+
+        if should_refresh {
+            // Need to refresh the JWKS
+            debug!("JWKS cache expired or not initialized, fetching new keys");
+            let new_validator = Self::new().await?;
+
+            // Update the cache
+            {
+                let mut cache = JWKS_CACHE.write().await;
+                *cache = Some(new_validator.clone());
+
+                let mut last_refresh = LAST_JWKS_REFRESH.write().await;
+                *last_refresh = Some(std::time::Instant::now());
+            }
+
+            Ok(new_validator)
+        } else {
+            // Use the cached validator
+            let cache = JWKS_CACHE.read().await;
+            match &*cache {
+                Some(validator) => Ok(validator.clone()),
+                None => {
+                    // Should never happen, but just in case
+                    warn!("JWKS cache inconsistency, fetching new keys");
+                    Self::new().await
+                }
+            }
+        }
+    }
+
     async fn fetch_jwks() -> Result<HashMap<String, DecodingKey>, AuthorizationError> {
         let jwks_uri = jwks_uri();
-        let response = reqwest::get(&jwks_uri).await.map_err(|e| {
+        let client = create_http_client();
+
+        debug!("Fetching JWKS from {}", jwks_uri);
+
+        // Simple, single attempt fetch strategy
+        let response = client.get(&jwks_uri).send().await.map_err(|e| {
+            warn!("Failed to fetch JWKS: {}", e);
             AuthorizationError::with_status(
                 format!("Failed to fetch JWKS from {}: {}", jwks_uri, e),
                 401,
             )
         })?;
 
-        let jwks: Value = response.json().await.map_err(|e| {
+        if !response.status().is_success() {
+            warn!("JWKS request failed with status {}", response.status());
+            return Err(AuthorizationError::with_status(
+                format!("JWKS request failed with status: {}", response.status()),
+                401,
+            ));
+        }
+
+        let jwks = response.json::<Value>().await.map_err(|e| {
+            warn!("Failed to parse JWKS: {}", e);
             AuthorizationError::with_status(format!("Failed to parse JWKS: {}", e), 401)
         })?;
 
-        let mut keys = HashMap::new();
+        debug!("Successfully fetched JWKS");
+        Ok(Self::parse_jwks(jwks)?)
+    }
+
+    fn parse_jwks(jwks: Value) -> Result<HashMap<String, DecodingKey>, AuthorizationError> {
+        let mut keys: HashMap<String, DecodingKey> = HashMap::new();
 
         if let Some(keys_array) = jwks["keys"].as_array() {
             for key in keys_array {
@@ -165,7 +250,6 @@ impl JwtValidator {
                             (key["x"].as_str(), key["y"].as_str(), key["crv"].as_str())
                         {
                             // For EC keys, we need to convert x and y to a single point
-                            // Note: We're using the EC raw components method which takes the concatenated x and y values
                             if let Ok(decoding_key) = DecodingKey::from_ec_components(x, y) {
                                 keys.insert(kid.to_string(), decoding_key);
                             }
@@ -279,7 +363,7 @@ pub async fn jwt_middleware(
         );
 
         // Log that we're bypassing JWT validation
-        tracing::warn!("⚠️ BYPASSING JWT VALIDATION - For development/testing only!");
+        warn!("⚠️ BYPASSING JWT VALIDATION - For development/testing only!");
 
         // Store dummy auth info in request extensions
         request.extensions_mut().insert(dummy_auth);
@@ -287,11 +371,9 @@ pub async fn jwt_middleware(
         return Ok(next.run(request).await);
     }
 
-    // Normal JWT validation path
-    // Create a new JwtValidator for this request
-    // In a production app, you'd want to share this validator
-    tracing::info!("Validating JWT token");
-    let validator = JwtValidator::new().await?;
+    // Normal JWT validation path using the cached validator
+    debug!("Validating JWT token");
+    let validator = JwtValidator::get_or_create().await?;
 
     let auth_header = request
         .headers()
