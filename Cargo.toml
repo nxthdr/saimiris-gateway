@@ -31,4 +31,4 @@ harness = false
 
 [[bin]]
 name = "generate_test_json"
-path = "bin/generate_test_json.rs"
+path = "bin/generate_probes.rs"

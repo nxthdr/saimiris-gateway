@@ -1,5 +1,6 @@
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use serde_json::{Value, json};
+use std::hint::black_box;
 
 // Import the types from saimiris-gateway that we want to benchmark
 use saimiris_gateway::probe::{SubmitProbesRequest, validate_probes};
