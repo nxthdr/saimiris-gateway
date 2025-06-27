@@ -1,11 +1,10 @@
 use anyhow::Result;
 use clap_verbosity_flag::{InfoLevel, Verbosity};
-use std::{env, net::SocketAddr, path::Path};
-use tracing::{info, warn};
+use std::net::SocketAddr;
+use tracing::{error, info, warn};
 
 use clap::Parser;
-use dotenv;
-use saimiris_gateway::{AppState, agent::AgentStore, create_app};
+use saimiris_gateway::{AppState, agent::AgentStore, create_app, kafka};
 
 /// Command line arguments for the gateway
 #[derive(Parser, Debug)]
@@ -16,8 +15,43 @@ pub struct Cli {
     pub address: String,
 
     /// Agent key for agent authentication
-    #[arg(long = "agent-key")]
+    #[arg(long = "agent-key", default_value = "agent-key")]
     pub agent_key: String,
+
+    /// Kafka broker addresses (comma-separated list)
+    #[arg(long = "kafka-brokers", default_value = "localhost:9092")]
+    pub kafka_brokers: String,
+
+    /// Kafka topic for probes
+    #[arg(long = "kafka-topic", default_value = "saimiris-targets")]
+    pub kafka_topic: String,
+
+    /// Kafka authentication protocol (PLAINTEXT or SASL_PLAINTEXT)
+    #[arg(long = "kafka-auth-protocol", default_value = "PLAINTEXT")]
+    pub kafka_auth_protocol: String,
+
+    /// Kafka SASL username (required for SASL_PLAINTEXT)
+    #[arg(long = "kafka-sasl-username")]
+    pub kafka_sasl_username: Option<String>,
+
+    /// Kafka SASL password (required for SASL_PLAINTEXT)
+    #[arg(long = "kafka-sasl-password")]
+    pub kafka_sasl_password: Option<String>,
+
+    /// Kafka SASL mechanism (default: SCRAM-SHA-512)
+    #[arg(long = "kafka-sasl-mechanism", default_value = "SCRAM-SHA-512")]
+    pub kafka_sasl_mechanism: String,
+
+    /// LogTo JWKS URI for JWT validation
+    #[arg(long = "logto-jwks-uri")]
+    pub logto_jwks_uri: Option<String>,
+    /// LogTo issuer for JWT validation
+    #[arg(long = "logto-issuer")]
+    pub logto_issuer: Option<String>,
+
+    /// Bypass JWT validation (for development only)
+    #[arg(long = "bypass-jwt", default_value = "false")]
+    pub bypass_jwt: bool,
 
     /// Verbosity level
     #[clap(flatten)]
@@ -37,46 +71,83 @@ fn set_tracing(cli: &Cli) -> Result<()> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Load environment variables from the appropriate .env file
-    let env_file = match env::var("ENVIRONMENT")
-        .unwrap_or_else(|_| "development".to_string())
-        .as_str()
-    {
-        "production" => ".env.production",
-        _ => ".env.development",
-    };
-
-    if Path::new(env_file).exists() {
-        dotenv::from_path(env_file).ok();
-        info!("Loaded environment from {}", env_file);
-    } else {
-        warn!(
-            "Environment file {} not found. Using default values.",
-            env_file
-        );
-    }
-
+    // Parse command line arguments
     let cli = Cli::parse();
+
     set_tracing(&cli)?;
 
     let agent_store = AgentStore::new();
 
-    // Display the JWT-related environment variables
-    match env::var("LOGTO_JWKS_URI") {
-        Ok(uri) => info!("LOGTO_JWKS_URI is set to: {}", uri),
-        Err(_) => warn!("LOGTO_JWKS_URI is not set!"),
+    // Log JWT configuration from CLI parameters
+    if let Some(ref jwks_uri) = cli.logto_jwks_uri {
+        info!("LogTo JWKS URI is set to: {}", jwks_uri);
+    } else {
+        warn!("LogTo JWKS URI is not set");
     }
 
-    match env::var("LOGTO_ISSUER") {
-        Ok(issuer) => info!("LOGTO_ISSUER is set to: {}", issuer),
-        Err(_) => warn!("LOGTO_ISSUER is not set!"),
+    if let Some(ref issuer) = cli.logto_issuer {
+        info!("LogTo issuer is set to: {}", issuer);
+    } else {
+        warn!("LogTo issuer is not set");
     }
+
+    // Initialize Kafka configuration from CLI parameters
+    let kafka_auth = match cli.kafka_auth_protocol.as_str() {
+        "PLAINTEXT" => kafka::KafkaAuth::PlainText,
+        "SASL_PLAINTEXT" => {
+            let username = cli.kafka_sasl_username.ok_or_else(|| {
+                anyhow::anyhow!("kafka-sasl-username is required for SASL_PLAINTEXT")
+            })?;
+            let password = cli.kafka_sasl_password.ok_or_else(|| {
+                anyhow::anyhow!("kafka-sasl-password is required for SASL_PLAINTEXT")
+            })?;
+            kafka::KafkaAuth::SaslPlainText(kafka::SaslAuth {
+                username,
+                password,
+                mechanism: cli.kafka_sasl_mechanism,
+            })
+        }
+        _ => {
+            return Err(anyhow::anyhow!(
+                "Invalid Kafka authentication protocol: {}. Use PLAINTEXT or SASL_PLAINTEXT",
+                cli.kafka_auth_protocol
+            ));
+        }
+    };
+
+    let kafka_config = kafka::KafkaConfig {
+        brokers: cli.kafka_brokers.clone(),
+        topic: cli.kafka_topic.clone(),
+        auth: kafka_auth,
+    };
+
+    // Create Kafka producer
+    let kafka_producer = match kafka::create_producer(&kafka_config) {
+        Ok(producer) => {
+            info!("Connected to Kafka brokers: {}", kafka_config.brokers);
+            info!("Using Kafka topic: {}", kafka_config.topic);
+            producer
+        }
+        Err(err) => {
+            error!("Failed to create Kafka producer: {}", err);
+            return Err(anyhow::anyhow!("Failed to create Kafka producer: {}", err));
+        }
+    };
 
     // Create app state with agent key for authentication
     let state = AppState {
         agent_store,
         agent_key: cli.agent_key,
+        kafka_config,
+        kafka_producer,
+        logto_jwks_uri: cli.logto_jwks_uri.clone(),
+        logto_issuer: cli.logto_issuer.clone(),
+        bypass_jwt_validation: cli.bypass_jwt,
     };
+
+    if cli.bypass_jwt {
+        warn!("⚠️ JWT validation bypass is enabled!");
+    }
 
     let app = create_app(state);
 

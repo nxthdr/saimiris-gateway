@@ -9,22 +9,22 @@ use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{collections::HashMap, env, fmt, sync::Arc, time::Duration};
+use std::{collections::HashMap, fmt, sync::Arc, time::Duration};
 use tokio::sync::RwLock;
 use tracing::{debug, warn};
 
 use crate::AppState;
 
-// JWT configuration functions to read from environment variables
-pub fn jwks_uri() -> Result<String, AuthorizationError> {
-    env::var("LOGTO_JWKS_URI").map_err(|_| {
-        AuthorizationError::with_status("LOGTO_JWKS_URI environment variable is not set", 500)
+// JWT configuration functions to get values from AppState
+pub fn jwks_uri(state: &AppState) -> Result<String, AuthorizationError> {
+    state.logto_jwks_uri.clone().ok_or_else(|| {
+        AuthorizationError::with_status("LOGTO_JWKS_URI is not configured", 500)
     })
 }
 
-pub fn issuer() -> Result<String, AuthorizationError> {
-    env::var("LOGTO_ISSUER").map_err(|_| {
-        AuthorizationError::with_status("LOGTO_ISSUER environment variable is not set", 500)
+pub fn issuer(state: &AppState) -> Result<String, AuthorizationError> {
+    state.logto_issuer.clone().ok_or_else(|| {
+        AuthorizationError::with_status("LOGTO_ISSUER is not configured", 500)
     })
 }
 
@@ -51,12 +51,7 @@ const JWKS_CACHE_DURATION: Duration = Duration::from_secs(12 * 60 * 60);
 static LAST_JWKS_REFRESH: Lazy<Arc<RwLock<Option<std::time::Instant>>>> =
     Lazy::new(|| Arc::new(RwLock::new(None)));
 
-// For testing purposes
-pub fn bypass_jwt_validation() -> bool {
-    env::var("BYPASS_JWT_VALIDATION")
-        .map(|val| val.to_lowercase() == "true")
-        .unwrap_or(false)
-}
+// No longer needed - we get the bypass flag directly from AppState
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthInfo {
@@ -142,12 +137,12 @@ pub struct JwtValidator {
 }
 
 impl JwtValidator {
-    pub async fn new() -> Result<Self, AuthorizationError> {
-        let jwks = Self::fetch_jwks().await?;
+    pub async fn new(state: &AppState) -> Result<Self, AuthorizationError> {
+        let jwks = Self::fetch_jwks(state).await?;
         Ok(Self { jwks })
     }
 
-    pub async fn get_or_create() -> Result<Self, AuthorizationError> {
+    pub async fn get_or_create(state: &AppState) -> Result<Self, AuthorizationError> {
         // Check if we have a cached validator that's still fresh
         let should_refresh = {
             let last_refresh = LAST_JWKS_REFRESH.read().await;
@@ -160,7 +155,7 @@ impl JwtValidator {
         if should_refresh {
             // Need to refresh the JWKS
             debug!("JWKS cache expired or not initialized, fetching new keys");
-            let new_validator = Self::new().await?;
+            let new_validator = Self::new(state).await?;
 
             // Update the cache
             {
@@ -180,14 +175,14 @@ impl JwtValidator {
                 None => {
                     // Should never happen, but just in case
                     warn!("JWKS cache inconsistency, fetching new keys");
-                    Self::new().await
+                    Self::new(state).await
                 }
             }
         }
     }
 
-    async fn fetch_jwks() -> Result<HashMap<String, DecodingKey>, AuthorizationError> {
-        let jwks_uri = jwks_uri()?;
+    async fn fetch_jwks(state: &AppState) -> Result<HashMap<String, DecodingKey>, AuthorizationError> {
+        let jwks_uri = jwks_uri(state)?;
         let client = create_http_client();
 
         debug!("Fetching JWKS from {}", jwks_uri);
@@ -269,7 +264,7 @@ impl JwtValidator {
         Ok(keys)
     }
 
-    pub fn validate_jwt(&self, token: &str) -> Result<AuthInfo, AuthorizationError> {
+    pub fn validate_jwt(&self, state: &AppState, token: &str) -> Result<AuthInfo, AuthorizationError> {
         let header = decode_header(token).map_err(|e| {
             AuthorizationError::with_status(format!("Invalid token header: {}", e), 401)
         })?;
@@ -304,7 +299,7 @@ impl JwtValidator {
         };
 
         let mut validation = Validation::new(algorithm);
-        validation.set_issuer(&[&issuer()?]);
+        validation.set_issuer(&[&issuer(state)?]);
         validation.validate_aud = false; // We'll verify audience manually
 
         let token_data = decode::<Value>(token, key, &validation)
@@ -345,12 +340,12 @@ impl JwtValidator {
 
 // JWT middleware for validating tokens
 pub async fn jwt_middleware(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     mut request: Request,
     next: Next,
 ) -> Result<Response, AuthorizationError> {
     // Check if we should bypass JWT validation (for development/testing)
-    if bypass_jwt_validation() {
+    if state.bypass_jwt_validation {
         // Create dummy auth info for development/testing
         let dummy_auth = AuthInfo::new(
             "test-user-id".to_string(),
@@ -371,7 +366,7 @@ pub async fn jwt_middleware(
 
     // Normal JWT validation path using the cached validator
     debug!("Validating JWT token");
-    let validator = JwtValidator::get_or_create().await?;
+    let validator = JwtValidator::get_or_create(&state).await?;
 
     let auth_header = request
         .headers()
@@ -379,7 +374,7 @@ pub async fn jwt_middleware(
         .and_then(|h| h.to_str().ok());
 
     let token = extract_bearer_token(auth_header)?;
-    let auth_info = validator.validate_jwt(token)?;
+    let auth_info = validator.validate_jwt(&state, token)?;
 
     // Store auth info in request extensions for handlers to use
     request.extensions_mut().insert(auth_info);

@@ -3,20 +3,39 @@ services:
     image: redpandadata/redpanda:latest
     volumes:
       - ./config/redpanda/redpanda.yml:/etc/redpanda/redpanda.yaml:ro
-    ports:
-      - "9092:9092"
+    networks:
+      integration:
+        ipv4_address: 10.0.0.100
 
   gateway:
     build: ..
-    command: -v --agent-key=testkey
+    command: -v --kafka-brokers=10.0.0.100:9092 --agent-key=testkey --bypass-jwt
     ports:
       - "8080:8080"
+    networks:
+      integration:
+        ipv4_address: 10.0.0.10
+    depends_on:
+      - redpanda
 
   agent:
+    # image: ghcr.io/nxthdr/saimiris:main
     build: ../../saimiris
-    command: agent --config /config/agent.yml
+    command: agent -v --config /config/agent.yml
+    volumes:
+      - ./config/agent/agent.yml:/config/agent.yml:ro
+    networks:
+      integration:
+        ipv4_address: 10.0.0.20
     depends_on:
       - redpanda
       - gateway
-    volumes:
-      - ./config/agent/agent.yml:/config/agent.yml:ro
+
+networks:
+  integration:
+    driver: bridge
+    enable_ipv6: true
+    ipam:
+      config:
+        - subnet: 10.0.0.0/24
+          gateway: 10.0.0.1

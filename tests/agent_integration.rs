@@ -1,15 +1,33 @@
 use axum_test::TestServer;
 use saimiris_gateway::agent::{AgentConfig, HealthStatus};
-use saimiris_gateway::{AppState, agent::AgentStore, create_app};
+use saimiris_gateway::{AppState, agent::AgentStore, create_app, kafka};
 use serde_json::json;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 #[tokio::test]
 async fn test_agent_api_scenario() {
+    // Create a mock Kafka setup
+    let kafka_config = kafka::KafkaConfig {
+        brokers: "localhost:9092".to_string(),
+        topic: "probes".to_string(),
+        auth: kafka::KafkaAuth::PlainText,
+    };
+
+    // Create a mock Kafka producer
+    let kafka_producer = rdkafka::config::ClientConfig::new()
+        .create()
+        .expect("Failed to create mock Kafka producer");
+
+    // Set up the app state
     let agent_store = AgentStore::new();
     let state = AppState {
         agent_store,
         agent_key: "test-key".to_string(),
+        kafka_config,
+        kafka_producer,
+        logto_jwks_uri: Some("https://test.logto.app/oidc/jwks".to_string()),
+        logto_issuer: Some("https://test.logto.app/oidc".to_string()),
+        bypass_jwt_validation: false,
     };
     let app = create_app(state.clone());
     let server = TestServer::new(app).unwrap();

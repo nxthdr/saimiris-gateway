@@ -6,11 +6,12 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0"
 axum = "0.8"
+capnp = "0.18"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.5", features = ["derive"] }
 clap-verbosity-flag = {version = "3.0.2", features = ["tracing"]}
-dotenv = "0.15"
 jsonwebtoken = "9.0"
+rdkafka = { version = "0.37.0", features = ["sasl", "ssl"] }
 reqwest = { version = "0.12", features = ["json", "native-tls-vendored"] }
 tokio = { version = "1.0", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
@@ -25,10 +26,10 @@ uuid = { version = "1.7", features = ["v4", "serde"] }
 axum-test = "17.0"
 criterion = "0.6"
 
+[build-dependencies]
+capnpc = "0.18"
+
 [[bench]]
-name = "deserialization_benchmark"
+name = "probes_benchmark"
 harness = false
 
-[[bin]]
-name = "generate_test_json"
-path = "bin/generate_probes.rs"

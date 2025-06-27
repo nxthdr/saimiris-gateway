@@ -6,27 +6,17 @@ redpanda:
         address: 0.0.0.0
         port: 33145
     kafka_api:
-        - address: 0.0.0.0
-          name: external
-          port: 9092
-          authentication_method: none
-        - address: 0.0.0.0
-          name: internal
-          port: 9093
-          authentication_method: none
+        address: 0.0.0.0
+        port: 9092
     admin:
         address: 0.0.0.0
         port: 9644
     advertised_rpc_api:
-        address: localhost
+        address: 10.0.0.100
         port: 33145
     advertised_kafka_api:
-        - address: localhost
-          name: external
-          port: 9092
-        - address: 10.0.0.100
-          name: internal
-          port: 9093
+        address: 10.0.0.100
+        port: 9092
     developer_mode: true
     auto_create_topics_enabled: true
     fetch_reads_debounce_timeout: 10

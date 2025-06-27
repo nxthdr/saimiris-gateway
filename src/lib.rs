@@ -1,6 +1,8 @@
 pub mod agent;
 pub mod jwt;
+pub mod kafka;
 pub mod probe;
+pub mod probe_capnp;
 
 use axum::{
     Router,
@@ -11,8 +13,9 @@ use axum::{
     response::Response,
     routing::{get, post},
 };
+use rdkafka::message::{Header, OwnedHeaders};
 use tower_http::trace::TraceLayer;
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
 
 use agent::{Agent, AgentConfig, AgentStore, HealthStatus};
 use probe::{SubmitProbesRequest, SubmitProbesResponse};
@@ -22,6 +25,11 @@ use uuid::Uuid;
 pub struct AppState {
     pub agent_store: AgentStore,
     pub agent_key: String,
+    pub kafka_config: kafka::KafkaConfig,
+    pub kafka_producer: rdkafka::producer::FutureProducer,
+    pub logto_jwks_uri: Option<String>,
+    pub logto_issuer: Option<String>,
+    pub bypass_jwt_validation: bool,
 }
 
 // Client-facing API
@@ -215,6 +223,12 @@ async fn submit_probes(
         return Err(StatusCode::BAD_REQUEST);
     }
 
+    // Validate the probes
+    if let Err(validation_error) = probe::validate_probes(&request.probes) {
+        debug!("Validation error: {}", validation_error);
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
     // Generate a unique measurement ID
     let measurement_id = Uuid::new_v4().to_string();
 
@@ -238,11 +252,49 @@ async fn submit_probes(
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    // Here you would queue the probes for the assigned agents
-    // This would typically involve storing the probes in a database
-    // and scheduling them to be run by the agents
+    // Directly deserialize and create probe batches (max 1MB per batch)
+    let probe_batches = match probe::deserialize_probes_batch(&request.probes, 1_000_000) {
+        Ok(batches) => batches,
+        Err(err) => {
+            error!("Failed to deserialize probe batch: {}", err);
+            return Err(StatusCode::BAD_REQUEST);
+        }
+    };
 
-    // For now, we'll just log the submission
+    // Construct headers based on metadata
+    let mut headers = OwnedHeaders::new();
+    for agent_meta in &request.metadata {
+        let agent_src_ip = agent_meta.ip_address.as_ref().map(|ip| ip.to_string());
+        headers = headers.insert(Header {
+            key: &agent_meta.id,
+            value: agent_src_ip.as_ref().map(|ip| ip.as_str()),
+        });
+    }
+
+    // Send each batch to Kafka
+    let topic = &state.kafka_config.topic;
+    for batch in probe_batches {
+        // Use the measurement ID as the message key
+        match kafka::send_to_kafka(
+            &state.kafka_producer,
+            topic,
+            &measurement_id,
+            &batch,
+            Some(headers.clone()),
+        )
+        .await
+        {
+            Ok(_) => debug!(
+                "Successfully sent probe batch for measurement {} to Kafka topic {}",
+                measurement_id, topic
+            ),
+            Err(err) => {
+                error!("Failed to send probe batch to Kafka: {}", err);
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        }
+    }
+
     debug!(
         "User {} submitted {} probes for measurement {}, assigned to {} agents",
         auth_info.sub,

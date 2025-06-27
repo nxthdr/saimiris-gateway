@@ -3,24 +3,21 @@ agent:
   secret: testsecret
 
 gateway:
-  url: http://gateway:8080
+  url: http://10.0.0.10:8080
   agent_key: testkey
   agent_secret: testsecret
 
 caracat:
-  - src_ipv6_addr: "f7a9:c9c0:0000::10"
+  - src_ipv4_addr: "10.0.0.20"
     integrity_check: false
-    probing_rate: 10000
-  - src_ipv6_addr: "f7a9:c9c0:0001::10"
-    integrity_check: false
-    probing_rate: 10000
+    probing_rate: 100
 
 kafka:
-  brokers: "redpanda:9092"
+  brokers: "10.0.0.100:9092"
   auth_protocol: PLAINTEXT
 
   in_topics: saimiris-targets
   in_group_id: saimiris-agent-wbmwwp9vna
 
-  out_enable: true
+  out_enable: false
   out_topic: saimiris-results
