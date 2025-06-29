@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod database;
 pub mod jwt;
 pub mod kafka;
 pub mod probe;
@@ -18,6 +19,7 @@ use tower_http::trace::TraceLayer;
 use tracing::{debug, error, warn};
 
 use agent::{Agent, AgentConfig, AgentStore, HealthStatus};
+use database::Database;
 use probe::{SubmitProbesRequest, SubmitProbesResponse};
 use uuid::Uuid;
 
@@ -30,13 +32,14 @@ pub struct AppState {
     pub logto_jwks_uri: Option<String>,
     pub logto_issuer: Option<String>,
     pub bypass_jwt_validation: bool,
+    pub database: Database,
 }
 
 // Client-facing API
 pub fn create_client_app(state: AppState) -> Router {
     // Create a protected router for endpoints that require authentication
     let protected_routes = Router::new()
-        .route("/user/credits", get(get_user_credits))
+        .route("/user/usage", get(get_user_usage))
         .route("/probes", post(submit_probes))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -104,14 +107,27 @@ async fn list_agents(State(state): State<AppState>) -> Json<Vec<Agent>> {
     Json(agents)
 }
 
-async fn get_user_credits(
-    Extension(_auth_info): Extension<jwt::AuthInfo>,
-) -> Json<serde_json::Value> {
-    // For now, we just return constant numbers
-    Json(serde_json::json!({
-        "used": 0,
-        "limit": 10_000,
-    }))
+async fn get_user_usage(
+    Extension(auth_info): Extension<jwt::AuthInfo>,
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let user_identifier = auth_info.client_id.as_ref().unwrap_or(&auth_info.sub);
+    match state
+        .database
+        .get_user_usage_stats(user_identifier, None, None)
+        .await
+    {
+        Ok(stats) => Ok(Json(serde_json::json!({
+            "submission_count": stats.submission_count,
+            "used": stats.total_probes,
+            "limit": 10_000,
+            "last_submitted": stats.last_submitted
+        }))),
+        Err(err) => {
+            error!("Failed to get user usage stats: {}", err);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
 }
 
 async fn get_agent(
@@ -302,6 +318,17 @@ async fn submit_probes(
         measurement_id,
         assigned_agents.len()
     );
+
+    // Record probe usage in database
+    let user_identifier = auth_info.client_id.as_ref().unwrap_or(&auth_info.sub);
+    if let Err(err) = state
+        .database
+        .record_probe_usage(user_identifier, request.probes.len() as i32)
+        .await
+    {
+        error!("Failed to record probe usage in database: {}", err);
+        // Don't fail the request if database recording fails
+    }
 
     Ok(Json(SubmitProbesResponse {
         measurement_id,

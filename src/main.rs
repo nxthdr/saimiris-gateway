@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use tracing::{error, info, warn};
 
 use clap::Parser;
-use saimiris_gateway::{AppState, agent::AgentStore, create_app, kafka};
+use saimiris_gateway::{AppState, agent::AgentStore, create_app, kafka, database::{Database, DatabaseConfig}};
 
 /// Command line arguments for the gateway
 #[derive(Parser, Debug)]
@@ -52,6 +52,10 @@ pub struct Cli {
     /// Bypass JWT validation (for development only)
     #[arg(long = "bypass-jwt", default_value = "false")]
     pub bypass_jwt: bool,
+
+    /// PostgreSQL database URL
+    #[arg(long = "database-url", default_value = "postgresql://localhost/saimiris_gateway")]
+    pub database_url: String,
 
     /// Verbosity level
     #[clap(flatten)]
@@ -134,6 +138,25 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
+    // Initialize database
+    let database_config = DatabaseConfig::new(cli.database_url.clone());
+    let database = match Database::new(&database_config).await {
+        Ok(db) => {
+            info!("Connected to database: {}", cli.database_url);
+            // Initialize database schema
+            if let Err(err) = db.initialize().await {
+                error!("Failed to initialize database schema: {}", err);
+                return Err(anyhow::anyhow!("Failed to initialize database schema: {}", err));
+            }
+            info!("Database schema initialized successfully");
+            db
+        }
+        Err(err) => {
+            error!("Failed to connect to database: {}", err);
+            return Err(anyhow::anyhow!("Failed to connect to database: {}", err));
+        }
+    };
+
     // Create app state with agent key for authentication
     let state = AppState {
         agent_store,
@@ -143,6 +166,7 @@ async fn main() -> anyhow::Result<()> {
         logto_jwks_uri: cli.logto_jwks_uri.clone(),
         logto_issuer: cli.logto_issuer.clone(),
         bypass_jwt_validation: cli.bypass_jwt,
+        database,
     };
 
     if cli.bypass_jwt {

@@ -1,8 +1,12 @@
 use axum_test::TestServer;
 use saimiris_gateway::agent::{AgentConfig, HealthStatus};
-use saimiris_gateway::{AppState, agent::AgentStore, create_app, kafka};
+use saimiris_gateway::{AppState, agent::AgentStore, create_app, kafka, database::Database};
 use serde_json::json;
 use std::net::{Ipv4Addr, Ipv6Addr};
+
+async fn create_mock_database() -> Database {
+    Database::new_mock()
+}
 
 #[tokio::test]
 async fn test_agent_api_scenario() {
@@ -28,6 +32,7 @@ async fn test_agent_api_scenario() {
         logto_jwks_uri: Some("https://test.logto.app/oidc/jwks".to_string()),
         logto_issuer: Some("https://test.logto.app/oidc".to_string()),
         bypass_jwt_validation: false,
+        database: create_mock_database().await,
     };
     let app = create_app(state.clone());
     let server = TestServer::new(app).unwrap();

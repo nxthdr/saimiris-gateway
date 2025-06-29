@@ -56,6 +56,7 @@ static LAST_JWKS_REFRESH: Lazy<Arc<RwLock<Option<std::time::Instant>>>> =
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthInfo {
     pub sub: String,
+    pub email: Option<String>,
     pub client_id: Option<String>,
     pub organization_id: Option<String>,
     pub scopes: Vec<String>,
@@ -65,6 +66,7 @@ pub struct AuthInfo {
 impl AuthInfo {
     pub fn new(
         sub: String,
+        email: Option<String>,
         client_id: Option<String>,
         organization_id: Option<String>,
         scopes: Vec<String>,
@@ -72,6 +74,7 @@ impl AuthInfo {
     ) -> Self {
         Self {
             sub,
+            email,
             client_id,
             organization_id,
             scopes,
@@ -330,6 +333,7 @@ impl JwtValidator {
 
         AuthInfo::new(
             claims["sub"].as_str().unwrap_or_default().to_string(),
+            claims["email"].as_str().map(|s| s.to_string()),
             claims["client_id"].as_str().map(|s| s.to_string()),
             claims["organization_id"].as_str().map(|s| s.to_string()),
             scopes,
@@ -349,6 +353,7 @@ pub async fn jwt_middleware(
         // Create dummy auth info for development/testing
         let dummy_auth = AuthInfo::new(
             "test-user-id".to_string(),
+            Some("test@example.com".to_string()),
             Some("test-client".to_string()),
             None,
             vec!["api:read".to_string(), "api:write".to_string()],

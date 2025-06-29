@@ -1,4 +1,22 @@
 services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: saimiris_gateway
+      POSTGRES_USER: saimiris_user
+      POSTGRES_PASSWORD: saimiris_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../migrations/001_create_probe_usage_table.sql:/docker-entrypoint-initdb.d/001_create_probe_usage_table.sql:ro
+    networks:
+      integration:
+        ipv4_address: 10.0.0.50
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U saimiris_user -d saimiris_gateway"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   redpanda:
     image: redpandadata/redpanda:latest
     volumes:
@@ -9,18 +27,19 @@ services:
 
   gateway:
     build: ..
-    command: -v --kafka-brokers=10.0.0.100:9092 --agent-key=testkey --bypass-jwt
+    command: -v --kafka-brokers=10.0.0.100:9092 --agent-key=testkey --bypass-jwt --database-url=postgresql://saimiris_user:saimiris_password@10.0.0.50/saimiris_gateway
     ports:
       - "8080:8080"
     networks:
       integration:
         ipv4_address: 10.0.0.10
     depends_on:
+      - postgres
       - redpanda
 
   agent:
-    # image: ghcr.io/nxthdr/saimiris:main
-    build: ../../saimiris
+    # build: ../../saimiris
+    image: ghcr.io/nxthdr/saimiris:main
     command: agent -v --config /config/agent.yml
     volumes:
       - ./config/agent/agent.yml:/config/agent.yml:ro
@@ -39,3 +58,6 @@ networks:
       config:
         - subnet: 10.0.0.0/24
           gateway: 10.0.0.1
+
+volumes:
+  postgres_data:

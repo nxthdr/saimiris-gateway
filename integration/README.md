@@ -16,6 +16,12 @@ docker compose up -d --force-recreate --renew-anon-volumes
 docker compose logs -f
 ```
 
+* Run integration tests:
+
+```sh
+./tests/test_database_integration.sh
+```
+
 * Stop the environment:
 
 ```sh

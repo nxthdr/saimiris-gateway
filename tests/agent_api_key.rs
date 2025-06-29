@@ -1,6 +1,11 @@
 use axum::{body::Body, http::Request};
 use rdkafka::config::ClientConfig;
-use saimiris_gateway::{AppState, agent::AgentStore, kafka};
+use saimiris_gateway::{AppState, agent::AgentStore, kafka, database::Database};
+
+async fn create_mock_database() -> Database {
+    // Create a mock database that doesn't require PostgreSQL
+    Database::new_mock()
+}
 
 #[tokio::test]
 async fn test_agent_key_middleware_with_valid_key() {
@@ -24,6 +29,7 @@ async fn test_agent_key_middleware_with_valid_key() {
         logto_jwks_uri: Some("https://test.logto.app/oidc/jwks".to_string()),
         logto_issuer: Some("https://test.logto.app/oidc".to_string()),
         bypass_jwt_validation: false,
+        database: create_mock_database().await,
     };
 
     let request = Request::builder()
@@ -64,6 +70,7 @@ async fn test_agent_key_middleware_with_invalid_key() {
         logto_jwks_uri: Some("https://test.logto.app/oidc/jwks".to_string()),
         logto_issuer: Some("https://test.logto.app/oidc".to_string()),
         bypass_jwt_validation: false,
+        database: create_mock_database().await,
     };
 
     let request = Request::builder()
@@ -103,6 +110,7 @@ async fn test_agent_key_middleware_without_header() {
         logto_jwks_uri: Some("https://test.logto.app/oidc/jwks".to_string()),
         logto_issuer: Some("https://test.logto.app/oidc".to_string()),
         bypass_jwt_validation: false,
+        database: create_mock_database().await,
     };
 
     let request = Request::builder().body(Body::empty()).unwrap();
@@ -138,6 +146,7 @@ async fn test_agent_key_middleware_with_malformed_header() {
         logto_jwks_uri: Some("https://test.logto.app/oidc/jwks".to_string()),
         logto_issuer: Some("https://test.logto.app/oidc".to_string()),
         bypass_jwt_validation: false,
+        database: create_mock_database().await,
     };
 
     let request = Request::builder()
@@ -154,8 +163,8 @@ async fn test_agent_key_middleware_with_malformed_header() {
     assert_eq!(auth_header, None);
 }
 
-#[test]
-fn test_app_state_creation() {
+#[tokio::test]
+async fn test_app_state_creation() {
     let agent_store = AgentStore::new();
     let agent_key = "test-api-key-123".to_string();
 
@@ -179,6 +188,7 @@ fn test_app_state_creation() {
         logto_jwks_uri: Some("https://test.logto.app/oidc/jwks".to_string()),
         logto_issuer: Some("https://test.logto.app/oidc".to_string()),
         bypass_jwt_validation: false,
+        database: create_mock_database().await,
     };
 
     assert_eq!(state.agent_key, agent_key);
