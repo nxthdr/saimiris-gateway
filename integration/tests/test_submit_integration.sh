@@ -10,10 +10,6 @@ POSTGRES_HOST="10.0.0.50"
 
 echo "🚀 Starting Saimiris Gateway Integration Tests with PostgreSQL"
 
-# Wait for services to be ready
-echo "⏳ Waiting for services to start..."
-sleep 10
-
 # Test 1: Check if gateway is responding
 echo "🔍 Test 1: Gateway health check"
 if curl -s -f "$GATEWAY_URL/api/agents" > /dev/null; then

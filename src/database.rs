@@ -111,32 +111,12 @@ impl Database {
     pub async fn initialize(&self) -> Result<(), sqlx::Error> {
         match &self.impl_ {
             DatabaseImpl::Real(pool) => {
-                // Create the probe_usage table if it doesn't exist
-                sqlx::query(
-                    r#"
-                    CREATE TABLE IF NOT EXISTS probe_usage (
-                        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                        user_hash VARCHAR(64) NOT NULL,
-                        probe_count INTEGER NOT NULL,
-                        timestamp TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-                        created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
-                    );
-                    "#,
-                )
-                .execute(pool)
-                .await?;
+                debug!("Running database migrations...");
 
-                // Create an index on user_hash and timestamp for efficient queries
-                sqlx::query(
-                    r#"
-                    CREATE INDEX IF NOT EXISTS idx_probe_usage_user_timestamp
-                    ON probe_usage (user_hash, timestamp);
-                    "#,
-                )
-                .execute(pool)
-                .await?;
+                // Run sqlx migrations
+                sqlx::migrate!("./migrations").run(pool).await?;
 
-                debug!("Database tables initialized successfully");
+                debug!("Database migrations completed successfully");
                 Ok(())
             }
             DatabaseImpl::Mock(_) => {

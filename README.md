@@ -9,6 +9,8 @@ The Saimiris Gateway is a web service that provides a REST API to interact with 
 
 - **Agent Management**: Register and manage measurement agents
 - **Probe Submission**: Submit probes to send via the measurements pipeline while ensuring a given quota is respected
+- **Auto-Migration**: Database schema is automatically created and updated on startup
+- **Privacy-First**: User identifiers are SHA-256 hashed for privacy protection
 
 ## Getting Started
 

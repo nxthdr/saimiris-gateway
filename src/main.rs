@@ -4,7 +4,13 @@ use std::net::SocketAddr;
 use tracing::{error, info, warn};
 
 use clap::Parser;
-use saimiris_gateway::{AppState, agent::AgentStore, create_app, kafka, database::{Database, DatabaseConfig}};
+use saimiris_gateway::{
+    AppState,
+    agent::AgentStore,
+    create_app,
+    database::{Database, DatabaseConfig},
+    kafka,
+};
 
 /// Command line arguments for the gateway
 #[derive(Parser, Debug)]
@@ -54,7 +60,10 @@ pub struct Cli {
     pub bypass_jwt: bool,
 
     /// PostgreSQL database URL
-    #[arg(long = "database-url", default_value = "postgresql://localhost/saimiris_gateway")]
+    #[arg(
+        long = "database-url",
+        default_value = "postgresql://localhost/saimiris_gateway"
+    )]
     pub database_url: String,
 
     /// Verbosity level
@@ -143,12 +152,17 @@ async fn main() -> anyhow::Result<()> {
     let database = match Database::new(&database_config).await {
         Ok(db) => {
             info!("Connected to database: {}", cli.database_url);
-            // Initialize database schema
+
+            // Run database migrations automatically
+            info!("Running database migrations...");
             if let Err(err) = db.initialize().await {
-                error!("Failed to initialize database schema: {}", err);
-                return Err(anyhow::anyhow!("Failed to initialize database schema: {}", err));
+                error!("Failed to run database migrations: {}", err);
+                return Err(anyhow::anyhow!(
+                    "Failed to run database migrations: {}",
+                    err
+                ));
             }
-            info!("Database schema initialized successfully");
+            info!("Database migrations completed successfully");
             db
         }
         Err(err) => {
