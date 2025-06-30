@@ -29,19 +29,33 @@ pub struct UserUsageStats {
     pub user_hash: String,
     pub submission_count: u32,
     pub total_probes: u32,
+    pub limit: u32,
     pub last_submitted: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct UserLimit {
+    pub id: Uuid,
+    pub user_hash: String,
+    pub probe_limit: u32,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
 // Mock storage for testing
 #[derive(Debug, Clone)]
 pub(crate) struct MockStorage {
     records: Arc<Mutex<Vec<ProbeUsageRecord>>>,
+    user_limits: Arc<Mutex<Vec<UserLimit>>>,
 }
+
+const DEFAULT_PROBE_LIMIT: u32 = 10_000; // Default probe limit for users
 
 impl MockStorage {
     fn new() -> Self {
         Self {
             records: Arc::new(Mutex::new(Vec::new())),
+            user_limits: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -66,12 +80,52 @@ impl MockStorage {
 
         let last_submitted = filtered_records.iter().map(|r| r.timestamp).max();
 
+        // Get user limit from mock storage
+        let user_limits = self.user_limits.lock().unwrap();
+        let limit = user_limits
+            .iter()
+            .find(|ul| ul.user_hash == user_hash)
+            .map(|ul| ul.probe_limit)
+            .unwrap_or(DEFAULT_PROBE_LIMIT); // Default limit if not found
+
         UserUsageStats {
             user_hash: user_hash.to_string(),
             submission_count: filtered_records.len() as u32,
             total_probes: filtered_records.iter().map(|r| r.probe_count as u32).sum(),
+            limit,
             last_submitted,
         }
+    }
+
+    fn set_user_limit(&self, user_hash: &str, probe_limit: u32) -> UserLimit {
+        let mut user_limits = self.user_limits.lock().unwrap();
+        let now = Utc::now();
+
+        // Check if user limit already exists
+        if let Some(existing) = user_limits.iter_mut().find(|ul| ul.user_hash == user_hash) {
+            existing.probe_limit = probe_limit;
+            existing.updated_at = now;
+            existing.clone()
+        } else {
+            // Create new user limit
+            let new_limit = UserLimit {
+                id: Uuid::new_v4(),
+                user_hash: user_hash.to_string(),
+                probe_limit,
+                created_at: now,
+                updated_at: now,
+            };
+            user_limits.push(new_limit.clone());
+            new_limit
+        }
+    }
+
+    fn get_user_limit(&self, user_hash: &str) -> Option<UserLimit> {
+        let user_limits = self.user_limits.lock().unwrap();
+        user_limits
+            .iter()
+            .find(|ul| ul.user_hash == user_hash)
+            .cloned()
     }
 
     fn get_recent(&self, limit: i32) -> Vec<ProbeUsageRecord> {
@@ -186,6 +240,21 @@ impl Database {
 
         match &self.impl_ {
             DatabaseImpl::Real(pool) => {
+                // First get the user's limit
+                let limit_row = sqlx::query(
+                    r#"
+                    SELECT probe_limit FROM user_limits WHERE user_hash = $1
+                    "#,
+                )
+                .bind(&user_hash)
+                .fetch_optional(pool)
+                .await?;
+
+                let limit = limit_row
+                    .map(|row| row.get::<i32, _>("probe_limit") as u32)
+                    .unwrap_or(DEFAULT_PROBE_LIMIT); // Default limit if not found
+
+                // Then get the usage stats
                 let row = sqlx::query(
                     r#"
                     SELECT
@@ -208,6 +277,7 @@ impl Database {
                     user_hash,
                     submission_count: row.get::<i64, _>("submission_count") as u32,
                     total_probes: row.get::<i64, _>("total_probes") as u32,
+                    limit,
                     last_submitted: row.get::<Option<DateTime<Utc>>, _>("last_submitted"),
                 })
             }
@@ -255,6 +325,97 @@ impl Database {
                 Ok(records)
             }
         }
+    }
+
+    /// Set a user's probe limit
+    pub async fn set_user_limit(
+        &self,
+        user_id: &str,
+        probe_limit: u32,
+    ) -> Result<UserLimit, sqlx::Error> {
+        let user_hash = hash_user_id(user_id);
+
+        match &self.impl_ {
+            DatabaseImpl::Real(pool) => {
+                let row = sqlx::query(
+                    r#"
+                    INSERT INTO user_limits (user_hash, probe_limit)
+                    VALUES ($1, $2)
+                    ON CONFLICT (user_hash)
+                    DO UPDATE SET
+                        probe_limit = EXCLUDED.probe_limit,
+                        updated_at = NOW()
+                    RETURNING id, user_hash, probe_limit, created_at, updated_at
+                    "#,
+                )
+                .bind(&user_hash)
+                .bind(probe_limit as i32)
+                .fetch_one(pool)
+                .await?;
+
+                Ok(UserLimit {
+                    id: row.get("id"),
+                    user_hash: row.get("user_hash"),
+                    probe_limit: row.get::<i32, _>("probe_limit") as u32,
+                    created_at: row.get("created_at"),
+                    updated_at: row.get("updated_at"),
+                })
+            }
+            DatabaseImpl::Mock(storage) => {
+                let limit = storage.set_user_limit(&user_hash, probe_limit);
+                Ok(limit)
+            }
+        }
+    }
+
+    /// Get a user's probe limit
+    pub async fn get_user_limit(&self, user_id: &str) -> Result<Option<UserLimit>, sqlx::Error> {
+        let user_hash = hash_user_id(user_id);
+
+        match &self.impl_ {
+            DatabaseImpl::Real(pool) => {
+                let row = sqlx::query(
+                    r#"
+                    SELECT id, user_hash, probe_limit, created_at, updated_at
+                    FROM user_limits
+                    WHERE user_hash = $1
+                    "#,
+                )
+                .bind(&user_hash)
+                .fetch_optional(pool)
+                .await?;
+
+                Ok(row.map(|r| UserLimit {
+                    id: r.get("id"),
+                    user_hash: r.get("user_hash"),
+                    probe_limit: r.get::<i32, _>("probe_limit") as u32,
+                    created_at: r.get("created_at"),
+                    updated_at: r.get("updated_at"),
+                }))
+            }
+            DatabaseImpl::Mock(storage) => {
+                let limit = storage.get_user_limit(&user_hash);
+                Ok(limit)
+            }
+        }
+    }
+
+    /// Check if a user can submit additional probes (rate limiting)
+    pub async fn can_user_submit_probes(
+        &self,
+        user_id: &str,
+        additional_probes: u32,
+        time_window_days: i64,
+    ) -> Result<bool, sqlx::Error> {
+        let stats = self
+            .get_user_usage_stats(
+                user_id,
+                Some(Utc::now() - chrono::Duration::days(time_window_days)),
+                Some(Utc::now()),
+            )
+            .await?;
+
+        Ok(stats.total_probes + additional_probes <= stats.limit)
     }
 
     pub fn get_pool(&self) -> Option<&PgPool> {
@@ -321,5 +482,91 @@ mod tests {
         let recent = db.get_recent_usage(Some(10)).await.unwrap();
         assert_eq!(recent.len(), 1);
         assert_eq!(recent[0].probe_count, probe_count);
+    }
+
+    #[tokio::test]
+    async fn test_user_limits() {
+        let db = Database::new_mock();
+        db.initialize().await.unwrap();
+
+        let user_id = "test-user";
+
+        // Test default limit (no limit set)
+        let limit = db.get_user_limit(user_id).await.unwrap();
+        assert!(limit.is_none());
+
+        // Test setting a user limit
+        let new_limit = db.set_user_limit(user_id, 5000).await.unwrap();
+        assert_eq!(new_limit.probe_limit, 5000);
+        assert_eq!(new_limit.user_hash, hash_user_id(user_id));
+
+        // Test getting the user limit
+        let retrieved_limit = db.get_user_limit(user_id).await.unwrap();
+        assert!(retrieved_limit.is_some());
+        let retrieved_limit = retrieved_limit.unwrap();
+        assert_eq!(retrieved_limit.probe_limit, 5000);
+        assert_eq!(retrieved_limit.user_hash, hash_user_id(user_id));
+
+        // Test updating the user limit
+        let updated_limit = db.set_user_limit(user_id, 8000).await.unwrap();
+        assert_eq!(updated_limit.probe_limit, 8000);
+        assert!(updated_limit.updated_at >= updated_limit.created_at);
+
+        // Test that stats include the custom limit
+        let stats = db.get_user_usage_stats(user_id, None, None).await.unwrap();
+        assert_eq!(stats.limit, 8000);
+    }
+
+    #[tokio::test]
+    async fn test_rate_limiting() {
+        let db = Database::new_mock();
+        db.initialize().await.unwrap();
+
+        let user_id = "test-user";
+
+        // Set a low limit for testing
+        db.set_user_limit(user_id, 100).await.unwrap();
+
+        // Test that user can submit probes within limit
+        let can_submit = db.can_user_submit_probes(user_id, 50, 30).await.unwrap();
+        assert!(can_submit);
+
+        // Record some usage
+        db.record_probe_usage(user_id, 60).await.unwrap();
+
+        // Test that user can still submit more probes within limit
+        let can_submit = db.can_user_submit_probes(user_id, 30, 30).await.unwrap();
+        assert!(can_submit);
+
+        // Test that user cannot exceed limit
+        let can_submit = db.can_user_submit_probes(user_id, 50, 30).await.unwrap();
+        assert!(!can_submit);
+
+        // Test with exactly at limit
+        let can_submit = db.can_user_submit_probes(user_id, 40, 30).await.unwrap();
+        assert!(can_submit);
+
+        // Test with one over limit
+        let can_submit = db.can_user_submit_probes(user_id, 41, 30).await.unwrap();
+        assert!(!can_submit);
+    }
+
+    #[tokio::test]
+    async fn test_default_limit_behavior() {
+        let db = Database::new_mock();
+        db.initialize().await.unwrap();
+
+        let user_id = "test-user";
+
+        // Test that default limit is used when no limit is set
+        let stats = db.get_user_usage_stats(user_id, None, None).await.unwrap();
+        assert_eq!(stats.limit, DEFAULT_PROBE_LIMIT); // Default limit
+
+        // Test rate limiting with default limit
+        let can_submit = db.can_user_submit_probes(user_id, 5000, 30).await.unwrap();
+        assert!(can_submit);
+
+        let can_submit = db.can_user_submit_probes(user_id, 15000, 30).await.unwrap();
+        assert!(!can_submit);
     }
 }

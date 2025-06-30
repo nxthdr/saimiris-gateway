@@ -41,6 +41,8 @@ pub fn create_client_app(state: AppState) -> Router {
     let protected_routes = Router::new()
         .route("/user/usage", get(get_user_usage))
         .route("/probes", post(submit_probes))
+        // .route("/admin/user-limit", post(set_user_limit))
+        // .route("/admin/user-limit/:user_id", get(get_user_limit))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             jwt::jwt_middleware,
@@ -119,9 +121,9 @@ async fn get_user_usage(
     {
         Ok(stats) => Ok(Json(serde_json::json!({
             "submission_count": stats.submission_count,
+            "last_submitted": stats.last_submitted,
             "used": stats.total_probes,
-            "limit": 10_000,
-            "last_submitted": stats.last_submitted
+            "limit": stats.limit
         }))),
         Err(err) => {
             error!("Failed to get user usage stats: {}", err);
@@ -245,6 +247,28 @@ async fn submit_probes(
         return Err(StatusCode::BAD_REQUEST);
     }
 
+    // Check if user can submit these probes (rate limiting)
+    let can_submit = match state
+        .database
+        .can_user_submit_probes(&auth_info.sub, request.probes.len() as u32, 30)
+        .await
+    {
+        Ok(can_submit) => can_submit,
+        Err(err) => {
+            error!("Failed to check user probe limit: {}", err);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
+
+    if !can_submit {
+        debug!(
+            "User {} exceeded probe limit, cannot submit {} probes",
+            auth_info.sub,
+            request.probes.len()
+        );
+        return Err(StatusCode::TOO_MANY_REQUESTS);
+    }
+
     // Generate a unique measurement ID
     let measurement_id = Uuid::new_v4().to_string();
 
@@ -336,3 +360,60 @@ async fn submit_probes(
         assigned_agents,
     }))
 }
+
+// Admin handler for setting user limits
+// #[derive(serde::Deserialize)]
+// struct SetUserLimitRequest {
+//     user_id: String,
+//     limit: u32,
+// }
+
+// async fn set_user_limit(
+//     Extension(_auth_info): Extension<jwt::AuthInfo>,
+//     State(state): State<AppState>,
+//     Json(request): Json<SetUserLimitRequest>,
+// ) -> Result<Json<serde_json::Value>, StatusCode> {
+//     // TODO: Add proper admin authorization check here
+//     // For now, just check if user has admin scope or role
+
+//     match state
+//         .database
+//         .set_user_limit(&request.user_id, request.limit)
+//         .await
+//     {
+//         Ok(limit) => Ok(Json(serde_json::json!({
+//             "user_hash": limit.user_hash,
+//             "limit": limit.probe_limit,
+//             "updated_at": limit.updated_at
+//         }))),
+//         Err(err) => {
+//             error!("Failed to set user limit: {}", err);
+//             Err(StatusCode::INTERNAL_SERVER_ERROR)
+//         }
+//     }
+// }
+
+// async fn get_user_limit(
+//     Extension(_auth_info): Extension<jwt::AuthInfo>,
+//     State(state): State<AppState>,
+//     Path(user_id): Path<String>,
+// ) -> Result<Json<serde_json::Value>, StatusCode> {
+//     // TODO: Add proper admin authorization check here
+
+//     match state.database.get_user_limit(&user_id).await {
+//         Ok(Some(limit)) => Ok(Json(serde_json::json!({
+//             "user_hash": limit.user_hash,
+//             "limit": limit.probe_limit,
+//             "created_at": limit.created_at,
+//             "updated_at": limit.updated_at
+//         }))),
+//         Ok(None) => Ok(Json(serde_json::json!({
+//             "limit": 10000,  // Default limit
+//             "is_default": true
+//         }))),
+//         Err(err) => {
+//             error!("Failed to get user limit: {}", err);
+//             Err(StatusCode::INTERNAL_SERVER_ERROR)
+//         }
+//     }
+// }
