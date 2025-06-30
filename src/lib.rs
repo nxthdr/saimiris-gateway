@@ -270,7 +270,7 @@ async fn submit_probes(
     }
 
     // Generate a unique measurement ID
-    let measurement_id = Uuid::new_v4().to_string();
+    let measurement_id = Uuid::new_v4();
 
     let mut assigned_agents = Vec::new();
 
@@ -318,7 +318,7 @@ async fn submit_probes(
         match kafka::send_to_kafka(
             &state.kafka_producer,
             topic,
-            &measurement_id,
+            &measurement_id.to_string(),
             &batch,
             Some(headers.clone()),
         )
@@ -347,7 +347,7 @@ async fn submit_probes(
     let user_identifier = &auth_info.sub;
     if let Err(err) = state
         .database
-        .record_probe_usage(user_identifier, request.probes.len() as i32)
+        .record_probe_usage(user_identifier, measurement_id, request.probes.len() as i32)
         .await
     {
         error!("Failed to record probe usage in database: {}", err);
@@ -355,7 +355,7 @@ async fn submit_probes(
     }
 
     Ok(Json(SubmitProbesResponse {
-        measurement_id,
+        measurement_id: measurement_id.to_string(),
         accepted_probes: request.probes.len(),
         assigned_agents,
     }))

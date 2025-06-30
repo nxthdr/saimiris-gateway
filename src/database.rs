@@ -183,14 +183,14 @@ impl Database {
     pub async fn record_probe_usage(
         &self,
         user_id: &str,
+        measurement_id: Uuid,
         probe_count: i32,
     ) -> Result<ProbeUsageRecord, sqlx::Error> {
         let user_hash = hash_user_id(user_id);
         let timestamp = Utc::now();
-        let id = Uuid::new_v4();
 
         let record = ProbeUsageRecord {
-            id,
+            id: measurement_id,
             user_hash: user_hash.clone(),
             probe_count,
             timestamp,
@@ -204,7 +204,7 @@ impl Database {
                     VALUES ($1, $2, $3, $4)
                     "#,
                 )
-                .bind(&id)
+                .bind(&measurement_id)
                 .bind(&user_hash)
                 .bind(probe_count)
                 .bind(timestamp)
@@ -472,7 +472,11 @@ mod tests {
         // Test recording probe usage
         let user_id = "test-user";
         let probe_count = 5;
-        let record = db.record_probe_usage(user_id, probe_count).await.unwrap();
+        let measurement_id = Uuid::new_v4();
+        let record = db
+            .record_probe_usage(user_id, measurement_id, probe_count)
+            .await
+            .unwrap();
 
         assert_eq!(record.probe_count, probe_count);
         assert_eq!(record.user_hash, hash_user_id(user_id));
@@ -540,7 +544,9 @@ mod tests {
         assert!(can_submit);
 
         // Record some usage
-        db.record_probe_usage(user_id, 60).await.unwrap();
+        db.record_probe_usage(user_id, Uuid::new_v4(), 60)
+            .await
+            .unwrap();
 
         // Test that user can still submit more probes within limit
         let can_submit = db.can_user_submit_probes(user_id, 30, None).await.unwrap();
@@ -610,7 +616,9 @@ mod tests {
         assert_eq!(stats.limit, 100);
 
         // Record some usage today
-        db.record_probe_usage(user_id, 50).await.unwrap();
+        db.record_probe_usage(user_id, Uuid::new_v4(), 50)
+            .await
+            .unwrap();
 
         // Test that today's usage is calculated correctly (use None for end_time to get current time)
         let stats = db
