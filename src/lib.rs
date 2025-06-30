@@ -111,7 +111,7 @@ async fn get_user_usage(
     Extension(auth_info): Extension<jwt::AuthInfo>,
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let user_identifier = auth_info.client_id.as_ref().unwrap_or(&auth_info.sub);
+    let user_identifier = &auth_info.sub;
     match state
         .database
         .get_user_usage_stats(user_identifier, None, None)
@@ -320,7 +320,7 @@ async fn submit_probes(
     );
 
     // Record probe usage in database
-    let user_identifier = auth_info.client_id.as_ref().unwrap_or(&auth_info.sub);
+    let user_identifier = &auth_info.sub;
     if let Err(err) = state
         .database
         .record_probe_usage(user_identifier, request.probes.len() as i32)

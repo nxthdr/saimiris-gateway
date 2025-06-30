@@ -82,7 +82,7 @@ For full end-to-end testing with real PostgreSQL and Kafka:
 ```bash
 cd integration
 docker compose up -d
-./test_database_integration.sh
+./tests/test_database_integration.sh
 docker compose down
 ```
 
