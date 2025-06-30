@@ -235,8 +235,12 @@ impl Database {
         end_time: Option<DateTime<Utc>>,
     ) -> Result<UserUsageStats, sqlx::Error> {
         let user_hash = hash_user_id(user_id);
-        let start_time = start_time.unwrap_or_else(|| Utc::now() - chrono::Duration::days(30));
-        let end_time = end_time.unwrap_or_else(Utc::now);
+
+        // Default to today's usage (from start of day to now)
+        let now = Utc::now();
+        let today_start = now.date_naive().and_hms_opt(0, 0, 0).unwrap().and_utc();
+        let start_time = start_time.unwrap_or(today_start);
+        let end_time = end_time.unwrap_or(now);
 
         match &self.impl_ {
             DatabaseImpl::Real(pool) => {
@@ -400,19 +404,23 @@ impl Database {
         }
     }
 
-    /// Check if a user can submit additional probes (rate limiting)
+    /// Check if a user can submit additional probes (daily rate limiting)
     pub async fn can_user_submit_probes(
         &self,
         user_id: &str,
         additional_probes: u32,
-        time_window_days: i64,
+        days_back: Option<i64>,
     ) -> Result<bool, sqlx::Error> {
+        let now = Utc::now();
+        let start_time = if let Some(days) = days_back {
+            now - chrono::Duration::days(days)
+        } else {
+            // Default to today's usage (from start of day)
+            now.date_naive().and_hms_opt(0, 0, 0).unwrap().and_utc()
+        };
+
         let stats = self
-            .get_user_usage_stats(
-                user_id,
-                Some(Utc::now() - chrono::Duration::days(time_window_days)),
-                Some(Utc::now()),
-            )
+            .get_user_usage_stats(user_id, Some(start_time), Some(now))
             .await?;
 
         Ok(stats.total_probes + additional_probes <= stats.limit)
@@ -528,26 +536,26 @@ mod tests {
         db.set_user_limit(user_id, 100).await.unwrap();
 
         // Test that user can submit probes within limit
-        let can_submit = db.can_user_submit_probes(user_id, 50, 30).await.unwrap();
+        let can_submit = db.can_user_submit_probes(user_id, 50, None).await.unwrap();
         assert!(can_submit);
 
         // Record some usage
         db.record_probe_usage(user_id, 60).await.unwrap();
 
         // Test that user can still submit more probes within limit
-        let can_submit = db.can_user_submit_probes(user_id, 30, 30).await.unwrap();
+        let can_submit = db.can_user_submit_probes(user_id, 30, None).await.unwrap();
         assert!(can_submit);
 
         // Test that user cannot exceed limit
-        let can_submit = db.can_user_submit_probes(user_id, 50, 30).await.unwrap();
+        let can_submit = db.can_user_submit_probes(user_id, 50, None).await.unwrap();
         assert!(!can_submit);
 
         // Test with exactly at limit
-        let can_submit = db.can_user_submit_probes(user_id, 40, 30).await.unwrap();
+        let can_submit = db.can_user_submit_probes(user_id, 40, None).await.unwrap();
         assert!(can_submit);
 
         // Test with one over limit
-        let can_submit = db.can_user_submit_probes(user_id, 41, 30).await.unwrap();
+        let can_submit = db.can_user_submit_probes(user_id, 41, None).await.unwrap();
         assert!(!can_submit);
     }
 
@@ -563,10 +571,63 @@ mod tests {
         assert_eq!(stats.limit, DEFAULT_PROBE_LIMIT); // Default limit
 
         // Test rate limiting with default limit
-        let can_submit = db.can_user_submit_probes(user_id, 5000, 30).await.unwrap();
+        let can_submit = db
+            .can_user_submit_probes(user_id, 5000, None)
+            .await
+            .unwrap();
         assert!(can_submit);
 
-        let can_submit = db.can_user_submit_probes(user_id, 15000, 30).await.unwrap();
+        let can_submit = db
+            .can_user_submit_probes(user_id, 15000, None)
+            .await
+            .unwrap();
         assert!(!can_submit);
+    }
+
+    #[tokio::test]
+    async fn test_daily_rate_limiting() {
+        let db = Database::new_mock();
+        db.initialize().await.unwrap();
+
+        let user_id = "test-user";
+
+        // Set a limit for testing
+        db.set_user_limit(user_id, 100).await.unwrap();
+
+        // Test daily usage calculation
+        let today_start = Utc::now()
+            .date_naive()
+            .and_hms_opt(0, 0, 0)
+            .unwrap()
+            .and_utc();
+
+        // Get today's stats (should be zero initially)
+        let stats = db
+            .get_user_usage_stats(user_id, Some(today_start), None)
+            .await
+            .unwrap();
+        assert_eq!(stats.total_probes, 0);
+        assert_eq!(stats.limit, 100);
+
+        // Record some usage today
+        db.record_probe_usage(user_id, 50).await.unwrap();
+
+        // Test that today's usage is calculated correctly (use None for end_time to get current time)
+        let stats = db
+            .get_user_usage_stats(user_id, Some(today_start), None)
+            .await
+            .unwrap();
+        assert_eq!(stats.total_probes, 50);
+
+        // Test daily rate limiting
+        let can_submit = db.can_user_submit_probes(user_id, 30, None).await.unwrap();
+        assert!(can_submit); // 50 + 30 = 80 <= 100
+
+        let can_submit = db.can_user_submit_probes(user_id, 60, None).await.unwrap();
+        assert!(!can_submit); // 50 + 60 = 110 > 100
+
+        // Test default behavior (today's usage)
+        let stats = db.get_user_usage_stats(user_id, None, None).await.unwrap();
+        assert_eq!(stats.total_probes, 50); // Should be today's usage
     }
 }

@@ -50,7 +50,7 @@ The gateway is configured via **command-line arguments** (not environment variab
 
 ### Client API (requires JWT authentication)
 
-- `GET /api/user/usage` - Get user probe usage statistics
+- `GET /api/user/usage` - Get user probe daily usage statistics
 - `POST /api/probes` - Submit probes for measurement
 
 ### Agent API (requires agent key)

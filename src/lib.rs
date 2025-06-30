@@ -247,10 +247,10 @@ async fn submit_probes(
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    // Check if user can submit these probes (rate limiting)
+    // Check if user can submit these probes (daily rate limiting)
     let can_submit = match state
         .database
-        .can_user_submit_probes(&auth_info.sub, request.probes.len() as u32, 30)
+        .can_user_submit_probes(&auth_info.sub, request.probes.len() as u32, None)
         .await
     {
         Ok(can_submit) => can_submit,
@@ -262,7 +262,7 @@ async fn submit_probes(
 
     if !can_submit {
         debug!(
-            "User {} exceeded probe limit, cannot submit {} probes",
+            "User {} exceeded daily probe limit, cannot submit {} probes",
             auth_info.sub,
             request.probes.len()
         );
