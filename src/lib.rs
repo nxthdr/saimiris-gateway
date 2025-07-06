@@ -304,10 +304,15 @@ async fn submit_probes(
     // Construct headers based on metadata
     let mut headers = OwnedHeaders::new();
     for agent_meta in &request.metadata {
-        let agent_src_ip = agent_meta.ip_address.as_ref().map(|ip| ip.to_string());
+        // Create JSON header value to match saimiris agent expectations
+        let agent_info_json = serde_json::json!({
+            "src_ip": agent_meta.ip_address
+        });
+        let agent_info_str = agent_info_json.to_string();
+
         headers = headers.insert(Header {
             key: &agent_meta.id,
-            value: agent_src_ip.as_ref().map(|ip| ip.as_str()),
+            value: Some(&agent_info_str),
         });
     }
 

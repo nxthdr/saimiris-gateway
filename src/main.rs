@@ -29,7 +29,7 @@ pub struct Cli {
     pub kafka_brokers: String,
 
     /// Kafka topic for probes
-    #[arg(long = "kafka-topic", default_value = "saimiris-targets")]
+    #[arg(long = "kafka-topic", default_value = "saimiris-probes")]
     pub kafka_topic: String,
 
     /// Kafka authentication protocol (PLAINTEXT or SASL_PLAINTEXT)

@@ -16,8 +16,8 @@ kafka:
   brokers: "10.0.0.100:9092"
   auth_protocol: PLAINTEXT
 
-  in_topics: saimiris-targets
+  in_topics: saimiris-probes
   in_group_id: saimiris-agent-wbmwwp9vna
 
   out_enable: false
-  out_topic: saimiris-results
+  out_topic: saimiris-replies
