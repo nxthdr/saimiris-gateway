@@ -2,7 +2,6 @@ use axum_test::TestServer;
 use saimiris_gateway::agent::{AgentConfig, HealthStatus};
 use saimiris_gateway::{AppState, agent::AgentStore, create_app, kafka, database::Database};
 use serde_json::json;
-use std::net::{Ipv4Addr, Ipv6Addr};
 
 async fn create_mock_database() -> Database {
     Database::new_mock()
@@ -56,8 +55,8 @@ async fn test_agent_api_scenario() {
             max_ttl: Some(255),
             integrity_check: true,
             interface: "eth0".to_string(),
-            src_ipv4_addr: Some("192.168.1.1".parse::<Ipv4Addr>().unwrap()),
-            src_ipv6_addr: Some("::1".parse::<Ipv6Addr>().unwrap()),
+            src_ipv4_prefix: Some("192.168.1.0/24".to_string()),
+            src_ipv6_prefix: Some("2001:db8::/32".to_string()),
             packets: 1000,
             probing_rate: 100,
             rate_limiting_method: "None".to_string(),
@@ -70,8 +69,8 @@ async fn test_agent_api_scenario() {
             max_ttl: Some(200),
             integrity_check: false,
             interface: "eth1".to_string(),
-            src_ipv4_addr: Some("192.168.1.2".parse::<Ipv4Addr>().unwrap()),
-            src_ipv6_addr: Some("::2".parse::<Ipv6Addr>().unwrap()),
+            src_ipv4_prefix: Some("10.0.0.0/8".to_string()),
+            src_ipv6_prefix: Some("2001:db9::/32".to_string()),
             packets: 2000,
             probing_rate: 200,
             rate_limiting_method: "auto".to_string(),

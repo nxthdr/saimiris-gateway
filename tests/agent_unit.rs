@@ -1,6 +1,5 @@
 use chrono::Utc;
 use saimiris_gateway::agent::{AgentConfig, HealthStatus};
-use std::net::{Ipv4Addr, Ipv6Addr};
 
 #[test]
 fn test_agent_config_serialization() {
@@ -12,8 +11,8 @@ fn test_agent_config_serialization() {
         max_ttl: Some(255),
         integrity_check: true,
         interface: "eth0".to_string(),
-        src_ipv4_addr: Some("192.168.1.1".parse::<Ipv4Addr>().unwrap()),
-        src_ipv6_addr: Some("::1".parse::<Ipv6Addr>().unwrap()),
+        src_ipv4_prefix: Some("192.168.1.0/24".to_string()),
+        src_ipv6_prefix: Some("2001:db8::/32".to_string()),
         packets: 1000,
         probing_rate: 100,
         rate_limiting_method: "None".to_string(),
@@ -29,8 +28,8 @@ fn test_agent_config_serialization() {
     assert_eq!(config.max_ttl, deserialized.max_ttl);
     assert_eq!(config.integrity_check, deserialized.integrity_check);
     assert_eq!(config.interface, deserialized.interface);
-    assert_eq!(config.src_ipv4_addr, deserialized.src_ipv4_addr);
-    assert_eq!(config.src_ipv6_addr, deserialized.src_ipv6_addr);
+    assert_eq!(config.src_ipv4_prefix, deserialized.src_ipv4_prefix);
+    assert_eq!(config.src_ipv6_prefix, deserialized.src_ipv6_prefix);
     assert_eq!(config.packets, deserialized.packets);
     assert_eq!(config.probing_rate, deserialized.probing_rate);
     assert_eq!(

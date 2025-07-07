@@ -49,9 +49,9 @@ pub struct AgentConfig {
     #[serde(default = "default_caracat_interface")]
     pub interface: String,
     #[serde(default)]
-    pub src_ipv4_addr: Option<std::net::Ipv4Addr>,
+    pub src_ipv4_prefix: Option<String>,
     #[serde(default)]
-    pub src_ipv6_addr: Option<std::net::Ipv6Addr>,
+    pub src_ipv6_prefix: Option<String>,
     #[serde(default = "default_caracat_packets")]
     pub packets: u64,
     #[serde(default = "default_caracat_probing_rate")]
