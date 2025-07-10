@@ -1,6 +1,7 @@
+use crate::hash_user_identifier;
 use chrono::{DateTime, Utc};
-use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Row};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tracing::debug;
 use uuid::Uuid;
@@ -47,6 +48,7 @@ pub struct UserLimit {
 pub(crate) struct MockStorage {
     records: Arc<Mutex<Vec<ProbeUsageRecord>>>,
     user_limits: Arc<Mutex<Vec<UserLimit>>>,
+    user_id_mappings: Arc<Mutex<HashMap<String, u32>>>,
 }
 
 const DEFAULT_PROBE_LIMIT: u32 = 10_000; // Default probe limit for users
@@ -56,6 +58,7 @@ impl MockStorage {
         Self {
             records: Arc::new(Mutex::new(Vec::new())),
             user_limits: Arc::new(Mutex::new(Vec::new())),
+            user_id_mappings: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -186,7 +189,7 @@ impl Database {
         measurement_id: Uuid,
         probe_count: i32,
     ) -> Result<ProbeUsageRecord, sqlx::Error> {
-        let user_hash = hash_user_id(user_id);
+        let user_hash = hash_user_identifier(user_id);
         let timestamp = Utc::now();
 
         let record = ProbeUsageRecord {
@@ -234,7 +237,7 @@ impl Database {
         start_time: Option<DateTime<Utc>>,
         end_time: Option<DateTime<Utc>>,
     ) -> Result<UserUsageStats, sqlx::Error> {
-        let user_hash = hash_user_id(user_id);
+        let user_hash = hash_user_identifier(user_id);
 
         // Default to today's usage (from start of day to now)
         let now = Utc::now();
@@ -337,7 +340,7 @@ impl Database {
         user_id: &str,
         probe_limit: u32,
     ) -> Result<UserLimit, sqlx::Error> {
-        let user_hash = hash_user_id(user_id);
+        let user_hash = hash_user_identifier(user_id);
 
         match &self.impl_ {
             DatabaseImpl::Real(pool) => {
@@ -374,7 +377,7 @@ impl Database {
 
     /// Get a user's probe limit
     pub async fn get_user_limit(&self, user_id: &str) -> Result<Option<UserLimit>, sqlx::Error> {
-        let user_hash = hash_user_id(user_id);
+        let user_hash = hash_user_identifier(user_id);
 
         match &self.impl_ {
             DatabaseImpl::Real(pool) => {
@@ -426,19 +429,61 @@ impl Database {
         Ok(stats.total_probes + additional_probes <= stats.limit)
     }
 
+    /// Get user ID by user hash from the database
+    pub async fn get_user_id_by_hash(&self, user_hash: &str) -> Result<Option<u32>, sqlx::Error> {
+        match &self.impl_ {
+            DatabaseImpl::Real(pool) => {
+                let row = sqlx::query("SELECT user_id FROM user_id_mappings WHERE user_hash = $1")
+                    .bind(user_hash)
+                    .fetch_optional(pool)
+                    .await?;
+
+                Ok(row.map(|row| row.get::<i32, _>("user_id") as u32))
+            }
+            DatabaseImpl::Mock(storage) => {
+                let mappings = storage.user_id_mappings.lock().unwrap();
+                Ok(mappings.get(user_hash).copied())
+            }
+        }
+    }
+
+    /// Create a new user ID mapping in the database
+    pub async fn create_user_id_mapping(
+        &self,
+        user_hash: &str,
+        user_id: u32,
+    ) -> Result<(), sqlx::Error> {
+        match &self.impl_ {
+            DatabaseImpl::Real(pool) => {
+                sqlx::query("INSERT INTO user_id_mappings (user_hash, user_id, created_at) VALUES ($1, $2, $3)")
+                    .bind(user_hash)
+                    .bind(user_id as i32)
+                    .bind(chrono::Utc::now())
+                    .execute(pool)
+                    .await?;
+                Ok(())
+            }
+            DatabaseImpl::Mock(storage) => {
+                let mut mappings = storage.user_id_mappings.lock().unwrap();
+                if mappings.contains_key(user_hash) || mappings.values().any(|&v| v == user_id) {
+                    // Simulate unique constraint violation with a simple IO error
+                    return Err(sqlx::Error::Io(std::io::Error::new(
+                        std::io::ErrorKind::AlreadyExists,
+                        "UNIQUE constraint failed: user_id already exists",
+                    )));
+                }
+                mappings.insert(user_hash.to_string(), user_id);
+                Ok(())
+            }
+        }
+    }
+
     pub fn get_pool(&self) -> Option<&PgPool> {
         match &self.impl_ {
             DatabaseImpl::Real(pool) => Some(pool),
             DatabaseImpl::Mock(_) => None,
         }
     }
-}
-
-/// Hash a user identifier (client_id or sub) to protect privacy while maintaining uniqueness
-fn hash_user_id(user_id: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(user_id.as_bytes());
-    hex::encode(hasher.finalize())
 }
 
 #[cfg(test)]
@@ -448,8 +493,8 @@ mod tests {
     #[test]
     fn test_hash_user_id() {
         let user_id = "test-user-123";
-        let hash1 = hash_user_id(user_id);
-        let hash2 = hash_user_id(user_id);
+        let hash1 = hash_user_identifier(user_id);
+        let hash2 = hash_user_identifier(user_id);
 
         // Same input should produce same hash
         assert_eq!(hash1, hash2);
@@ -458,7 +503,7 @@ mod tests {
         assert_eq!(hash1.len(), 64);
 
         // Different inputs should produce different hashes
-        let different_hash = hash_user_id("different-user");
+        let different_hash = hash_user_identifier("different-user");
         assert_ne!(hash1, different_hash);
     }
 
@@ -479,7 +524,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(record.probe_count, probe_count);
-        assert_eq!(record.user_hash, hash_user_id(user_id));
+        assert_eq!(record.user_hash, hash_user_identifier(user_id));
 
         // Test getting user stats
         let stats = db.get_user_usage_stats(user_id, None, None).await.unwrap();
@@ -510,14 +555,14 @@ mod tests {
         // Test setting a user limit
         let new_limit = db.set_user_limit(user_id, 5000).await.unwrap();
         assert_eq!(new_limit.probe_limit, 5000);
-        assert_eq!(new_limit.user_hash, hash_user_id(user_id));
+        assert_eq!(new_limit.user_hash, hash_user_identifier(user_id));
 
         // Test getting the user limit
         let retrieved_limit = db.get_user_limit(user_id).await.unwrap();
         assert!(retrieved_limit.is_some());
         let retrieved_limit = retrieved_limit.unwrap();
         assert_eq!(retrieved_limit.probe_limit, 5000);
-        assert_eq!(retrieved_limit.user_hash, hash_user_id(user_id));
+        assert_eq!(retrieved_limit.user_hash, hash_user_identifier(user_id));
 
         // Test updating the user limit
         let updated_limit = db.set_user_limit(user_id, 8000).await.unwrap();

@@ -218,9 +218,9 @@ pub struct SubmitProbesRequest {
 /// Response structure for submitted probes
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SubmitProbesResponse {
-    pub measurement_id: String,
-    pub accepted_probes: usize,
-    pub assigned_agents: Vec<String>,
+    pub id: String,
+    pub probes: usize,
+    pub agents: Vec<AgentMetadata>,
 }
 
 /// Validate a batch of JSON probes
