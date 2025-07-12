@@ -408,10 +408,17 @@ pub fn validate_json_probe(probe: &Value) -> Result<(), String> {
                 return Err(format!("Expected 5 elements, got {}", arr.len()));
             }
 
-            // Validate IP address
+            // Validate IP address (must be IPv6 only)
             if let Value::String(ip_str) = &arr[0] {
-                if IpAddr::from_str(ip_str).is_err() {
-                    return Err(format!("Invalid IP address: {}", ip_str));
+                match IpAddr::from_str(ip_str) {
+                    Ok(IpAddr::V6(_)) => {} // valid IPv6
+                    Ok(IpAddr::V4(_)) => {
+                        // IPv4 addresses are not allowed for now
+                        return Err(format!("IPv4 addresses are not allowed: {}", ip_str));
+                    }
+                    Err(_) => {
+                        return Err(format!("Invalid IP address: {}", ip_str));
+                    }
                 }
             } else {
                 return Err("IP address must be a string".to_string());
@@ -448,7 +455,7 @@ pub fn validate_json_probe(probe: &Value) -> Result<(), String> {
             // Validate protocol
             if let Value::String(p) = &arr[4] {
                 match p.to_lowercase().as_str() {
-                    "tcp" | "udp" | "icmp" | "icmpv6" => (), // Valid protocols
+                    "udp" | "icmpv6" => (), // Valid protocols (not allowing ICMPv4 for now)
                     _ => return Err(format!("Invalid protocol: {}", p)),
                 }
             } else {
@@ -463,6 +470,36 @@ pub fn validate_json_probe(probe: &Value) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn test_ipv6_and_protocol_validation() {
+        // Valid IPv6 with allowed protocol (icmpv6)
+        let valid_probe_icmpv6 = json!(["2001:db8::1", 12345, 80, 64, "icmpv6"]);
+        assert!(validate_json_probe(&valid_probe_icmpv6).is_ok());
+
+        // Valid IPv6 with allowed protocol (udp)
+        let valid_probe_udp = json!(["2001:db8::2", 12345, 80, 64, "udp"]);
+        assert!(validate_json_probe(&valid_probe_udp).is_ok());
+
+        // Valid IPv6 with disallowed protocol (tcp)
+        let invalid_probe_tcp = json!(["2001:db8::3", 12345, 80, 64, "tcp"]);
+        assert!(validate_json_probe(&invalid_probe_tcp).is_err());
+
+        // Valid IPv6 with disallowed protocol (icmp)
+        let invalid_probe_icmp = json!(["2001:db8::4", 12345, 80, 64, "icmp"]);
+        assert!(validate_json_probe(&invalid_probe_icmp).is_err());
+
+        // Invalid IPv4 address with allowed protocol (udp)
+        let invalid_ipv4_udp = json!(["192.168.1.1", 12345, 80, 64, "udp"]);
+        assert!(validate_json_probe(&invalid_ipv4_udp).is_err());
+
+        // Invalid IPv4 address with allowed protocol (icmpv6)
+        let invalid_ipv4_icmpv6 = json!(["10.0.0.1", 12345, 80, 64, "icmpv6"]);
+        assert!(validate_json_probe(&invalid_ipv4_icmpv6).is_err());
+
+        // Invalid IPv4 address with disallowed protocol (tcp)
+        let invalid_ipv4_tcp = json!(["10.0.0.2", 12345, 80, 64, "tcp"]);
+        assert!(validate_json_probe(&invalid_ipv4_tcp).is_err());
+    }
     use super::*;
     use capnp::message::ReaderOptions;
     use serde_json::{from_value, json};
@@ -491,8 +528,8 @@ mod tests {
 
     #[test]
     fn test_validate_probes() {
-        let valid_probe = json!(["192.168.1.1", 12345, 80, 64, "tcp"]);
-        let invalid_probe = json!(["192.168.1.2", 0, 80, 64, "tcp"]); // Invalid port
+        let valid_probe = json!(["2001:db8::1", 12345, 80, 64, "udp"]); // Valid IPv6 and allowed protocol
+        let invalid_probe = json!(["2001:db8::2", 0, 80, 64, "udp"]); // Invalid port
 
         let probes = vec![valid_probe.clone(), invalid_probe.clone()];
 
@@ -651,38 +688,38 @@ mod tests {
 
     #[test]
     fn test_json_validation() {
-        // Test valid probe
-        let valid_probe = json!(["192.168.1.1", 12345, 53, 64, "tcp"]);
+        // Test valid probe (IPv6, allowed protocol)
+        let valid_probe = json!(["2001:db8::1", 12345, 53, 64, "udp"]);
         assert!(validate_json_probe(&valid_probe).is_ok());
 
         // Test invalid cases
 
-        // Invalid IP
-        let invalid_ip = json!(["not-an-ip", 12345, 53, 64, "tcp"]);
+        // Invalid IP (not an IP)
+        let invalid_ip = json!(["not-an-ip", 12345, 53, 64, "udp"]);
         assert!(validate_json_probe(&invalid_ip).is_err());
 
         // Invalid source port
-        let invalid_src_port = json!(["192.168.1.1", 0, 53, 64, "tcp"]);
+        let invalid_src_port = json!(["2001:db8::1", 0, 53, 64, "udp"]);
         assert!(validate_json_probe(&invalid_src_port).is_err());
 
         // Invalid destination port
-        let invalid_dst_port = json!(["192.168.1.1", 12345, 0, 64, "tcp"]);
+        let invalid_dst_port = json!(["2001:db8::1", 12345, 0, 64, "udp"]);
         assert!(validate_json_probe(&invalid_dst_port).is_err());
 
         // Invalid TTL
-        let invalid_ttl = json!(["192.168.1.1", 12345, 53, 0, "tcp"]);
+        let invalid_ttl = json!(["2001:db8::1", 12345, 53, 0, "udp"]);
         assert!(validate_json_probe(&invalid_ttl).is_err());
 
         // Invalid protocol
-        let invalid_protocol = json!(["192.168.1.1", 12345, 53, 64, "invalid"]);
+        let invalid_protocol = json!(["2001:db8::1", 12345, 53, 64, "invalid"]);
         assert!(validate_json_probe(&invalid_protocol).is_err());
 
         // Invalid array length
-        let invalid_length = json!(["192.168.1.1", 12345, 53, 64]);
+        let invalid_length = json!(["2001:db8::1", 12345, 53, 64]);
         assert!(validate_json_probe(&invalid_length).is_err());
 
         // Not an array
-        let not_array = json!({"ip": "192.168.1.1", "src_port": 12345});
+        let not_array = json!({"ip": "2001:db8::1", "src_port": 12345});
         assert!(validate_json_probe(&not_array).is_err());
     }
 
