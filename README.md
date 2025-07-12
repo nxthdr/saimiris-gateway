@@ -50,7 +50,8 @@ The gateway is configured via **command-line arguments** (not environment variab
 
 ### Client API (requires JWT authentication)
 
-- `GET /api/user/usage` - Get user probe daily usage statistics
+- `GET /api/user/me` - Get user probe daily usage statistics
+- `GET /api/user/prefixes` - List user prefixes per agent
 - `POST /api/probes` - Submit probes for measurement
 
 ### Agent API (requires agent key)
@@ -77,7 +78,7 @@ cargo test
 
 ### Integration Testing
 
-For full end-to-end testing with real PostgreSQL and Kafka:
+For full end-to-end testing with real PostgreSQL, Kafka and a Saimiris agent:
 
 ```bash
 cd integration

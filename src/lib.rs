@@ -542,11 +542,14 @@ async fn submit_probes(
         assigned_agents.len()
     );
 
+    // Get the probe count for the measurement
+    let total_probe_count = request.probes.len() * assigned_agents.len();
+
     // Record probe usage in database
     let user_identifier = &auth_info.sub;
     if let Err(err) = state
         .database
-        .record_probe_usage(user_identifier, measurement_id, request.probes.len() as i32)
+        .record_probe_usage(user_identifier, measurement_id, total_probe_count as i32)
         .await
     {
         error!("Failed to record probe usage in database: {}", err);
@@ -555,7 +558,7 @@ async fn submit_probes(
 
     Ok(Json(SubmitProbesResponse {
         id: measurement_id.to_string(),
-        probes: request.probes.len(),
+        probes: total_probe_count,
         agents: assigned_agents,
     }))
 }
