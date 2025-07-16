@@ -121,7 +121,13 @@ async fn get_user_info(
 
     // Get or create user ID from database
     let user_id = match get_or_create_user_id(&state.database, user_identifier).await {
-        Ok(id) => id,
+        Ok(id) => {
+            debug!(
+                "Successfully retrieved/created user ID {} for user {}",
+                id, user_identifier
+            );
+            id
+        }
         Err(err) => {
             error!(
                 "Failed to get/create user ID for {}: {}",
@@ -168,8 +174,18 @@ async fn get_user_prefixes(
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let user_identifier = &auth_info.sub;
     let user_id = match get_or_create_user_id(&state.database, user_identifier).await {
-        Ok(id) => id,
+        Ok(id) => {
+            debug!(
+                "Successfully retrieved/created user ID {} for user {} in get_user_prefixes",
+                id, user_identifier
+            );
+            id
+        }
         Err(e) => {
+            error!(
+                "Failed to get/create user ID for {} in get_user_prefixes: {}",
+                user_identifier, e
+            );
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({
@@ -584,7 +600,7 @@ pub async fn get_or_create_user_id(
     match database.get_user_id_by_hash(&user_hash).await {
         Ok(Some(user_id)) => return Ok(user_id),
         Ok(None) => {
-            // User doesn't exist, create new ID
+            // User doesn't exist, continue to create new ID
         }
         Err(e) => return Err(format!("Database error: {}", e)),
     }
@@ -599,19 +615,51 @@ pub async fn get_or_create_user_id(
             .await
         {
             Ok(()) => return Ok(candidate_id),
-            Err(e)
-                if e.to_string().contains("UNIQUE constraint")
-                    || e.to_string().contains("duplicate") =>
-            {
-                // ID collision, try again
-                tracing::debug!(
-                    "User ID {} collision on attempt {}, retrying",
-                    candidate_id,
-                    attempt + 1
-                );
-                continue;
+            Err(e) => {
+                let error_msg = e.to_string();
+                if error_msg.contains("UNIQUE constraint") || error_msg.contains("duplicate") {
+                    // Check if this was a user_hash collision (another request created the user)
+                    // or a user_id collision (our random ID wasn't unique)
+                    if error_msg.contains("user_hash") {
+                        // Another request created this user while we were processing
+                        // Try to fetch the existing user ID
+                        match database.get_user_id_by_hash(&user_hash).await {
+                            Ok(Some(existing_user_id)) => {
+                                tracing::debug!(
+                                    "User {} was created by another request, using existing ID {}",
+                                    user_identifier,
+                                    existing_user_id
+                                );
+                                return Ok(existing_user_id);
+                            }
+                            Ok(None) => {
+                                // This shouldn't happen, but retry if it does
+                                tracing::warn!(
+                                    "Race condition detected for user {}, retrying",
+                                    user_identifier
+                                );
+                                continue;
+                            }
+                            Err(e) => {
+                                return Err(format!(
+                                    "Database error during conflict resolution: {}",
+                                    e
+                                ));
+                            }
+                        }
+                    } else {
+                        // user_id collision, try a different random ID
+                        tracing::debug!(
+                            "User ID {} collision on attempt {}, retrying with new ID",
+                            candidate_id,
+                            attempt + 1
+                        );
+                        continue;
+                    }
+                } else {
+                    return Err(format!("Database error: {}", e));
+                }
             }
-            Err(e) => return Err(format!("Database error: {}", e)),
         }
     }
 

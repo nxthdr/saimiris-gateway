@@ -455,18 +455,47 @@ impl Database {
     ) -> Result<(), sqlx::Error> {
         match &self.impl_ {
             DatabaseImpl::Real(pool) => {
-                sqlx::query("INSERT INTO user_id_mappings (user_hash, user_id, created_at) VALUES ($1, $2, $3)")
+                match sqlx::query("INSERT INTO user_id_mappings (user_hash, user_id, created_at) VALUES ($1, $2, $3)")
                     .bind(user_hash)
                     .bind(user_id as i32)
                     .bind(chrono::Utc::now())
                     .execute(pool)
-                    .await?;
-                Ok(())
+                    .await
+                {
+                    Ok(_) => Ok(()),
+                    Err(sqlx::Error::Database(db_err)) => {
+                        // Check if this is a constraint violation and provide better context
+                        let error_message = db_err.message();
+                        if error_message.contains("user_id_mappings_pkey") || error_message.contains("user_hash") {
+                            // Primary key violation on user_hash - another request created this user
+                            return Err(sqlx::Error::Io(std::io::Error::new(
+                                std::io::ErrorKind::AlreadyExists,
+                                "UNIQUE constraint failed: user_hash already exists",
+                            )));
+                        } else if error_message.contains("user_id") {
+                            // Unique constraint violation on user_id - need to try different ID
+                            return Err(sqlx::Error::Io(std::io::Error::new(
+                                std::io::ErrorKind::AlreadyExists,
+                                "UNIQUE constraint failed: user_id already exists",
+                            )));
+                        }
+                        // Re-throw the original error for other database issues
+                        Err(sqlx::Error::Database(db_err))
+                    }
+                    Err(e) => Err(e),
+                }
             }
             DatabaseImpl::Mock(storage) => {
                 let mut mappings = storage.user_id_mappings.lock().unwrap();
-                if mappings.contains_key(user_hash) || mappings.values().any(|&v| v == user_id) {
-                    // Simulate unique constraint violation with a simple IO error
+                if mappings.contains_key(user_hash) {
+                    // Simulate user_hash primary key violation
+                    return Err(sqlx::Error::Io(std::io::Error::new(
+                        std::io::ErrorKind::AlreadyExists,
+                        "UNIQUE constraint failed: user_hash already exists",
+                    )));
+                }
+                if mappings.values().any(|&v| v == user_id) {
+                    // Simulate user_id unique constraint violation
                     return Err(sqlx::Error::Io(std::io::Error::new(
                         std::io::ErrorKind::AlreadyExists,
                         "UNIQUE constraint failed: user_id already exists",
