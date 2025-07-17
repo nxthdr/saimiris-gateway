@@ -4,6 +4,7 @@ use saimiris_gateway::agent::{AgentConfig, HealthStatus};
 #[test]
 fn test_agent_config_serialization() {
     let config = AgentConfig {
+        name: Some("test-agent".to_string()),
         batch_size: 100,
         instance_id: 1,
         dry_run: false,
@@ -21,6 +22,7 @@ fn test_agent_config_serialization() {
     let serialized = serde_json::to_string(&config).unwrap();
     let deserialized: AgentConfig = serde_json::from_str(&serialized).unwrap();
 
+    assert_eq!(config.name, deserialized.name);
     assert_eq!(config.batch_size, deserialized.batch_size);
     assert_eq!(config.instance_id, deserialized.instance_id);
     assert_eq!(config.dry_run, deserialized.dry_run);

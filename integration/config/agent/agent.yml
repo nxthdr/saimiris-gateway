@@ -8,7 +8,13 @@ gateway:
   agent_secret: testsecret
 
 caracat:
-  - instance_id: 0
+  - name: config0
+    instance_id: 0
+    src_ipv6_prefix: "::0/48"
+    integrity_check: false
+    probing_rate: 100
+  - name: config1
+    instance_id: 1
     src_ipv6_prefix: "::0/48"
     integrity_check: false
     probing_rate: 100

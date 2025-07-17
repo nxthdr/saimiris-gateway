@@ -34,6 +34,8 @@ pub enum AgentStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct AgentConfig {
+    #[serde(default)]
+    pub name: Option<String>,
     #[serde(default = "default_caracat_batch_size")]
     pub batch_size: u64,
     #[serde(default = "default_caracat_instance_id")]

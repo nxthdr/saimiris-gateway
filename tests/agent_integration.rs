@@ -1,6 +1,6 @@
 use axum_test::TestServer;
 use saimiris_gateway::agent::{AgentConfig, HealthStatus};
-use saimiris_gateway::{AppState, agent::AgentStore, create_app, kafka, database::Database};
+use saimiris_gateway::{AppState, agent::AgentStore, create_app, database::Database, kafka};
 use serde_json::json;
 
 async fn create_mock_database() -> Database {
@@ -48,6 +48,7 @@ async fn test_agent_api_scenario() {
     // 2. Update config
     let configs = vec![
         AgentConfig {
+            name: Some("config-1".to_string()),
             batch_size: 100,
             instance_id: 1,
             dry_run: false,
@@ -62,6 +63,7 @@ async fn test_agent_api_scenario() {
             rate_limiting_method: "None".to_string(),
         },
         AgentConfig {
+            name: Some("config-2".to_string()),
             batch_size: 200,
             instance_id: 2,
             dry_run: true,
