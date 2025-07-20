@@ -2183,6 +2183,7 @@ dependencies = [
  "clap-verbosity-flag",
  "criterion",
  "hex",
+ "ipnet",
  "jsonwebtoken",
  "once_cell",
  "rand 0.9.1",

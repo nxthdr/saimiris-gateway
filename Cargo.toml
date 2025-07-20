@@ -24,6 +24,7 @@ uuid = { version = "1.7", features = ["v4", "serde"] }
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "sqlite", "chrono", "uuid", "migrate"] }
 sha2 = "0.10"
 hex = "0.4"
+ipnet = "2.9"
 rand = "0.9.1"
 
 [dev-dependencies]
@@ -36,4 +37,3 @@ capnpc = "0.21"
 [[bench]]
 name = "probes_benchmark"
 harness = false
-

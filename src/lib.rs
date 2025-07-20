@@ -15,6 +15,7 @@ use axum::{
     routing::{get, post},
 };
 use hex;
+use ipnet::Ipv6Net;
 use rdkafka::message::{Header, OwnedHeaders};
 use sha2::{Digest, Sha256};
 use std::net::{IpAddr, Ipv6Addr};
@@ -45,6 +46,10 @@ pub fn create_client_app(state: AppState) -> Router {
         .route("/user/me", get(get_user_info))
         .route("/user/prefixes", get(get_user_prefixes))
         .route("/probes", post(submit_probes))
+        .route(
+            "/measurement/{id}/status",
+            get(get_measurement_status_handler),
+        )
         // .route("/admin/user-limit", post(set_user_limit))
         // .route("/admin/user-limit/:user_id", get(get_user_limit))
         .layer(axum::middleware::from_fn_with_state(
@@ -68,6 +73,10 @@ pub fn create_agent_app(state: AppState) -> Router {
         .route("/agent/register", post(register_agent))
         .route("/agent/{id}/config", post(update_agent_config))
         .route("/agent/{id}/health", post(update_agent_health))
+        .route(
+            "/agent/{id}/measurement/{measurement_id}/status",
+            post(update_measurement_status),
+        )
         .with_state(state.clone())
         .layer(axum::middleware::from_fn_with_state(
             state,
@@ -207,7 +216,7 @@ async fn get_user_prefixes(
 
             for agent_config in config {
                 if let Some(ref agent_prefix) = agent_config.src_ipv6_prefix {
-                    // Calculate the user's /80 prefix within this agent's /48 prefix
+                    // Calculate the user's prefix within this agent's prefix
                     if let Some(user_prefix) = calculate_user_prefix(agent_prefix, user_id) {
                         prefixes.push(serde_json::json!({
                             "agent_prefix": agent_prefix,
@@ -410,14 +419,14 @@ async fn submit_probes(
                     }
                     if !valid_ip {
                         debug!(
-                            "User {} attempted to use IP {} which is not within their allocated /80 prefix",
+                            "User {} attempted to use IP {} which is not within their allocated prefix",
                             auth_info.sub, ip_addr
                         );
                         return Err((
                             StatusCode::FORBIDDEN,
                             Json(serde_json::json!({
                                 "error": 403,
-                                "message": format!("IP address {} is not within your allocated /80 prefix", ip_addr)
+                                "message": format!("IP address {} is not within your allocated prefix", ip_addr)
                             })),
                         ));
                     }
@@ -505,37 +514,68 @@ async fn submit_probes(
         }
     };
 
-    // Construct headers based on metadata
-    let mut headers = OwnedHeaders::new();
-    for agent_meta in &request.metadata {
-        // Create JSON header value to match saimiris agent expectations
-        let agent_info_json = serde_json::json!({
-            "src_ip": agent_meta.ip_address
-        });
-        let agent_info_str = agent_info_json.to_string();
-
-        headers = headers.insert(Header {
-            key: &agent_meta.id,
-            value: Some(&agent_info_str),
-        });
+    // Initialize measurement tracking in database
+    let user_identifier = &auth_info.sub;
+    let user_hash = crate::hash_user_identifier(user_identifier);
+    for agent_meta in &assigned_agents {
+        if let Err(err) = state
+            .database
+            .create_measurement_tracking(
+                &user_hash,
+                measurement_id,
+                &agent_meta.id,
+                request.probes.len() as i32,
+            )
+            .await
+        {
+            error!(
+                "Failed to create measurement tracking for agent {}: {}",
+                agent_meta.id, err
+            );
+            // Continue with other agents even if one fails
+        }
     }
 
-    // Send each batch to Kafka
+    // Send each batch to Kafka with proper headers
     let topic = &state.kafka_config.topic;
-    for batch in probe_batches {
+    let total_batches = probe_batches.len();
+
+    for (batch_index, batch) in probe_batches.iter().enumerate() {
+        // Construct headers for this specific batch
+        let mut headers = OwnedHeaders::new();
+        let is_last_batch = batch_index == total_batches - 1;
+
+        for agent_meta in &request.metadata {
+            // Create JSON header value to match saimiris agent expectations
+            let agent_info_json = serde_json::json!({
+                "src_ip": agent_meta.ip_address,
+                "measurement_id": measurement_id.to_string(),
+                "end_of_measurement": is_last_batch,
+            });
+            let agent_info_str = agent_info_json.to_string();
+
+            headers = headers.insert(Header {
+                key: &agent_meta.id,
+                value: Some(&agent_info_str),
+            });
+        }
+
         // Use the measurement ID as the message key
         match kafka::send_to_kafka(
             &state.kafka_producer,
             topic,
             &measurement_id.to_string(),
-            &batch,
-            Some(headers.clone()),
+            batch,
+            Some(headers),
         )
         .await
         {
             Ok(_) => debug!(
-                "Successfully sent probe batch for measurement {} to Kafka topic {}",
-                measurement_id, topic
+                "Successfully sent probe batch {} of {} for measurement {} to Kafka topic {}",
+                batch_index + 1,
+                total_batches,
+                measurement_id,
+                topic
             ),
             Err(err) => {
                 error!("Failed to send probe batch to Kafka: {}", err);
@@ -562,7 +602,6 @@ async fn submit_probes(
     let total_probe_count = request.probes.len() * assigned_agents.len();
 
     // Record probe usage in database
-    let user_identifier = &auth_info.sub;
     if let Err(err) = state
         .database
         .record_probe_usage(user_identifier, measurement_id, total_probe_count as i32)
@@ -577,6 +616,184 @@ async fn submit_probes(
         probes: total_probe_count,
         agents: assigned_agents,
     }))
+}
+
+// Handler for getting measurement status (client-facing)
+async fn get_measurement_status_handler(
+    Extension(auth_info): Extension<jwt::AuthInfo>,
+    State(state): State<AppState>,
+    Path(measurement_id): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let measurement_uuid = match Uuid::parse_str(&measurement_id) {
+        Ok(uuid) => uuid,
+        Err(_) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": 400,
+                    "message": "Invalid measurement ID format"
+                })),
+            ));
+        }
+    };
+
+    let user_hash = crate::hash_user_identifier(&auth_info.sub);
+
+    match state
+        .database
+        .get_measurement_status(measurement_uuid, &user_hash)
+        .await
+    {
+        Ok(Some(status)) => {
+            // Also get detailed tracking information
+            let tracking = match state
+                .database
+                .get_measurement_tracking(measurement_uuid, &user_hash)
+                .await
+            {
+                Ok(tracking) => tracking,
+                Err(err) => {
+                    error!("Failed to get measurement tracking details: {}", err);
+                    Vec::new()
+                }
+            };
+
+            let agents_detail: Vec<_> = tracking
+                .into_iter()
+                .map(|t| {
+                    serde_json::json!({
+                        "agent_id": t.agent_id,
+                        "expected_probes": t.expected_probes,
+                        "sent_probes": t.sent_probes,
+                        "is_complete": t.is_complete,
+                        "updated_at": t.updated_at
+                    })
+                })
+                .collect();
+
+            Ok(Json(serde_json::json!({
+                "measurement_id": status.measurement_id,
+                "total_agents": status.total_agents,
+                "completed_agents": status.completed_agents,
+                "total_expected_probes": status.total_expected_probes,
+                "total_sent_probes": status.total_sent_probes,
+                "measurement_complete": status.measurement_complete,
+                "started_at": status.started_at,
+                "last_updated": status.last_updated,
+                "agents": agents_detail
+            })))
+        }
+        Ok(None) => Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": 404,
+                "message": "Measurement not found"
+            })),
+        )),
+        Err(err) => {
+            error!("Failed to get measurement status: {}", err);
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": 500,
+                    "message": "Failed to retrieve measurement status"
+                })),
+            ))
+        }
+    }
+}
+
+// Handler for agents to update measurement status (agent-facing)
+#[derive(serde::Deserialize)]
+struct UpdateMeasurementStatusRequest {
+    sent_probes: i32,
+    is_complete: bool,
+}
+
+async fn update_measurement_status(
+    State(state): State<AppState>,
+    Path((agent_id, measurement_id)): Path<(String, String)>,
+    Json(request): Json<UpdateMeasurementStatusRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let measurement_uuid = match Uuid::parse_str(&measurement_id) {
+        Ok(uuid) => uuid,
+        Err(_) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": 400,
+                    "message": "Invalid measurement ID format"
+                })),
+            ));
+        }
+    };
+
+    // We need to find the user_hash for this measurement by looking up the tracking entry
+    let tracking_entry = match state
+        .database
+        .get_measurement_tracking_by_agent(measurement_uuid, &agent_id)
+        .await
+    {
+        Ok(Some(entry)) => entry,
+        Ok(None) => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({
+                    "error": 404,
+                    "message": "Measurement tracking entry not found for this agent"
+                })),
+            ));
+        }
+        Err(err) => {
+            error!("Failed to get measurement tracking: {}", err);
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": 500,
+                    "message": "Failed to retrieve measurement tracking"
+                })),
+            ));
+        }
+    };
+
+    let user_hash = &tracking_entry.user_hash;
+
+    match state
+        .database
+        .update_measurement_probe_count(
+            measurement_uuid,
+            user_hash,
+            &agent_id,
+            request.sent_probes,
+            request.is_complete,
+        )
+        .await
+    {
+        Ok(updated_tracking) => {
+            debug!(
+                "Updated measurement {} for agent {}: {} probes sent, complete: {}",
+                measurement_id, agent_id, request.sent_probes, request.is_complete
+            );
+
+            Ok(Json(serde_json::json!({
+                "measurement_id": measurement_id,
+                "agent_id": agent_id,
+                "sent_probes": updated_tracking.sent_probes,
+                "is_complete": updated_tracking.is_complete,
+                "updated_at": updated_tracking.updated_at
+            })))
+        }
+        Err(err) => {
+            error!("Failed to update measurement status: {}", err);
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": 500,
+                    "message": "Failed to update measurement status"
+                })),
+            ))
+        }
+    }
 }
 
 /// Compute a consistent hash for a user identifier
@@ -598,28 +815,50 @@ pub async fn get_or_create_user_id(
 
     // First, try to get existing user ID
     match database.get_user_id_by_hash(&user_hash).await {
-        Ok(Some(user_id)) => return Ok(user_id),
-        Ok(None) => {
-            // User doesn't exist, continue to create new ID
+        Ok(Some(user_id)) => {
+            tracing::debug!(
+                "Found existing user ID {} for user {}",
+                user_id,
+                user_identifier
+            );
+            return Ok(user_id);
         }
-        Err(e) => return Err(format!("Database error: {}", e)),
+        Ok(None) => {
+            tracing::debug!("Creating new user ID for user {}", user_identifier);
+        }
+        Err(e) => {
+            return Err(format!("Database error when fetching user ID: {}", e));
+        }
     }
 
-    // Generate a new unique user ID
+    // Generate a new unique user ID with collision handling
     let max_attempts = 100; // Prevent infinite loops
     for attempt in 0..max_attempts {
-        let candidate_id = generate_random_user_id();
+        // Start with deterministic generation for consistency, then use random for fallback
+        let candidate_id = if attempt == 0 {
+            generate_deterministic_user_id(&user_hash)
+        } else {
+            generate_random_user_id()
+        };
 
         match database
             .create_user_id_mapping(&user_hash, candidate_id)
             .await
         {
-            Ok(()) => return Ok(candidate_id),
+            Ok(()) => {
+                tracing::debug!(
+                    "Created new user ID {} for user {} (attempt {})",
+                    candidate_id,
+                    user_identifier,
+                    attempt + 1
+                );
+                return Ok(candidate_id);
+            }
             Err(e) => {
                 let error_msg = e.to_string();
                 if error_msg.contains("UNIQUE constraint") || error_msg.contains("duplicate") {
                     // Check if this was a user_hash collision (another request created the user)
-                    // or a user_id collision (our random ID wasn't unique)
+                    // or a user_id collision (our ID wasn't unique)
                     if error_msg.contains("user_hash") {
                         // Another request created this user while we were processing
                         // Try to fetch the existing user ID
@@ -648,7 +887,7 @@ pub async fn get_or_create_user_id(
                             }
                         }
                     } else {
-                        // user_id collision, try a different random ID
+                        // user_id collision, try a different ID
                         tracing::debug!(
                             "User ID {} collision on attempt {}, retrying with new ID",
                             candidate_id,
@@ -669,84 +908,108 @@ pub async fn get_or_create_user_id(
     ))
 }
 
-/// Generate a random 32-bit user ID
-/// Excludes reserved ranges and common problematic values
+/// Generate a deterministic 32-bit user ID from the user hash
+/// This ensures the same user identifier always gets the same user ID
+fn generate_deterministic_user_id(user_hash: &str) -> u32 {
+    // Use the first 8 characters of the hex hash to create a deterministic ID
+    let hash_prefix = &user_hash[..8];
+    let hash_u32 = u32::from_str_radix(hash_prefix, 16).unwrap_or(1000);
+
+    // Ensure the ID is within our valid range
+    const MIN_USER_ID: u32 = 1000;
+    const MAX_USER_ID: u32 = 0xFFFF_FF00; // Leave some headroom
+
+    if hash_u32 < MIN_USER_ID {
+        MIN_USER_ID + (hash_u32 % (MAX_USER_ID - MIN_USER_ID))
+    } else if hash_u32 > MAX_USER_ID {
+        MIN_USER_ID + (hash_u32 % (MAX_USER_ID - MIN_USER_ID))
+    } else {
+        hash_u32
+    }
+}
+
+/// Generate a random 32-bit user ID for fallback when deterministic generation collides
 fn generate_random_user_id() -> u32 {
     use rand::Rng;
     let mut rng = rand::rng();
 
-    // Generate random ID in range, excluding reserved values
-    // Avoid 0, 0xFFFFFFFF, and low values that might be reserved
+    // Generate a random 32-bit number within our valid range
     const MIN_USER_ID: u32 = 1000;
     const MAX_USER_ID: u32 = 0xFFFF_FF00; // Leave some headroom
 
     rng.random_range(MIN_USER_ID..=MAX_USER_ID)
 }
 
-/// Parse an agent's /48 prefix and calculate the user's /80 prefix address
-/// Returns the IPv6 address of the user's /80 prefix, or None if the agent prefix is invalid
+/// Parse an agent's prefix and calculate the user's prefix address
+/// Returns the IPv6 address of the user's prefix, or None if the agent prefix is invalid
+/// The user gets 32 bits of space for their allocation within the agent's prefix
 fn calculate_user_prefix_addr(agent_prefix: &str, user_id: u32) -> Option<Ipv6Addr> {
-    // Parse the agent's /48 prefix
-    let agent_prefix_parts: Vec<&str> = agent_prefix.split('/').collect();
-    if agent_prefix_parts.len() != 2 {
+    let agent_net: Ipv6Net = agent_prefix.parse().ok()?;
+
+    // Validate there's enough space for a 32-bit user ID
+    if agent_net.prefix_len() > 96 {
         return None;
     }
 
-    let prefix_len: u8 = match agent_prefix_parts[1].parse() {
-        Ok(len) if len == 48 => len,
-        _ => return None,
-    };
+    // Get the network address and add the user ID
+    let network_addr = agent_net.network();
+    let network_u128 = u128::from(network_addr);
 
-    // Validate it's a /48 prefix
-    if prefix_len != 48 {
-        return None;
-    }
+    // Calculate how many bits to shift the user ID
+    let user_id_shift = 128 - agent_net.prefix_len() - 32;
+    let user_id_bits = (user_id as u128) << user_id_shift;
 
-    let agent_base: Ipv6Addr = match agent_prefix_parts[0].parse() {
-        Ok(addr) => addr,
-        Err(_) => return None,
-    };
+    // Combine network address with user ID
+    let user_prefix_addr = network_u128 | user_id_bits;
 
-    // Create the user's /80 prefix by combining agent /48 + user ID (32 bits)
-    let agent_segments = agent_base.segments();
-    let mut user_segments = agent_segments;
-
-    // The user ID occupies the next 32 bits after the /48 prefix
-    // /48 means first 3 segments (48 bits) are the agent prefix
-    // Next 2 segments (32 bits) should contain the user ID
-    user_segments[3] = ((user_id >> 16) & 0xFFFF) as u16;
-    user_segments[4] = (user_id & 0xFFFF) as u16;
-
-    Some(Ipv6Addr::from(user_segments))
+    Some(Ipv6Addr::from(user_prefix_addr))
 }
 
-/// Validate that an IPv6 address is within the user's allocated /80 prefix
-/// Agent prefix (/48) + User ID (32 bits) = /80
+/// Validate that an IPv6 address is within the user's allocated prefix
+/// Agent prefix + User ID (32 bits) = user prefix
 pub fn validate_user_ipv6(user_ip: &Ipv6Addr, agent_prefix: &str, user_id: u32) -> bool {
-    let expected_prefix_addr = match calculate_user_prefix_addr(agent_prefix, user_id) {
+    let agent_net: Ipv6Net = match agent_prefix.parse() {
+        Ok(net) => net,
+        Err(_) => return false,
+    };
+
+    // Validate there's enough space for a 32-bit user ID
+    if agent_net.prefix_len() > 96 {
+        return false;
+    }
+
+    // Calculate the user's prefix network
+    let user_prefix_addr = match calculate_user_prefix_addr(agent_prefix, user_id) {
         Some(addr) => addr,
         None => return false,
     };
 
-    let user_segments = user_ip.segments();
-    let expected_segments = expected_prefix_addr.segments();
+    // Create the user's prefix network (agent prefix length + 32 bits)
+    let user_prefix_len = agent_net.prefix_len() + 32;
+    let user_net = match Ipv6Net::new(user_prefix_addr, user_prefix_len) {
+        Ok(net) => net,
+        Err(_) => return false,
+    };
 
-    // Check if the user's IP matches the expected /80 prefix
-    // First 5 segments (80 bits) must match
-    for i in 0..5 {
-        if user_segments[i] != expected_segments[i] {
-            return false;
-        }
-    }
-
-    true
+    // Check if the user's IP is within their allocated prefix
+    user_net.contains(user_ip)
 }
 
-/// Calculate the user's /80 prefix within an agent's /48 prefix
-/// Returns the user's allocated /80 prefix as a string, or None if the agent prefix is invalid
+/// Calculate the user's prefix within an agent's prefix
+/// Returns the user's allocated prefix as a string, or None if the agent prefix is invalid
+/// The user gets 32 bits of space within the agent's prefix
 pub fn calculate_user_prefix(agent_prefix: &str, user_id: u32) -> Option<String> {
+    let agent_net: Ipv6Net = agent_prefix.parse().ok()?;
+
+    // Validate there's enough space for a 32-bit user ID
+    if agent_net.prefix_len() > 96 {
+        return None;
+    }
+
     let user_prefix_addr = calculate_user_prefix_addr(agent_prefix, user_id)?;
-    Some(format!("{}/80", user_prefix_addr))
+    let user_prefix_len = agent_net.prefix_len() + 32; // User gets 32 bits within agent prefix
+
+    Some(format!("{}/{}", user_prefix_addr, user_prefix_len))
 }
 
 // Admin handler for setting user limits

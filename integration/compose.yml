@@ -35,14 +35,20 @@ services:
       - redpanda
 
   agent:
-    # build: ../../saimiris
-    image: ghcr.io/nxthdr/saimiris:main
-    command: agent -v --config /config/agent.yml
+    build: ../../saimiris
+    # image: ghcr.io/nxthdr/saimiris:main
+    command: agent -vv --config /config/agent.yml
+    privileged: true
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+      - SYS_ADMIN
     volumes:
       - ./config/agent/agent.yml:/config/agent.yml:ro
     networks:
       integration:
         ipv4_address: 10.0.0.20
+        ipv6_address: 2001:db8::c95b:3f80:0:1
     depends_on:
       - redpanda
       - gateway
@@ -55,4 +61,6 @@ networks:
       config:
         - subnet: 10.0.0.0/24
           gateway: 10.0.0.1
+        - subnet: 2001:db8::/64
+          gateway: 2001:db8::1
 

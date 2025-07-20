@@ -10,21 +10,21 @@ gateway:
 caracat:
   - name: config0
     instance_id: 0
-    src_ipv6_prefix: "::0/48"
     integrity_check: false
-    probing_rate: 100
+    probing_rate: 5
+    interface: eth0
   - name: config1
     instance_id: 1
-    src_ipv6_prefix: "::0/48"
     integrity_check: false
-    probing_rate: 100
+    probing_rate: 5
+    interface: eth0
 
 kafka:
   brokers: "10.0.0.100:9092"
   auth_protocol: PLAINTEXT
 
   in_topics: saimiris-probes
-  in_group_id: saimiris-agent-wbmwwp9vna
+  in_group_id: saimiris-agent-integration
 
   out_enable: false
   out_topic: saimiris-replies
