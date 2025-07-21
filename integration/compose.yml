@@ -35,8 +35,8 @@ services:
       - redpanda
 
   agent:
-    build: ../../saimiris
-    # image: ghcr.io/nxthdr/saimiris:main
+    # build: ../../saimiris
+    image: ghcr.io/nxthdr/saimiris:main
     command: agent -vv --config /config/agent.yml
     privileged: true
     cap_add:

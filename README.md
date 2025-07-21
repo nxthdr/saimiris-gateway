@@ -53,12 +53,14 @@ The gateway is configured via **command-line arguments** (not environment variab
 - `GET /api/user/me` - Get user probe daily usage statistics
 - `GET /api/user/prefixes` - List user prefixes per agent
 - `POST /api/probes` - Submit probes for measurement
+- `GET /api/measurements/{id}/status` - Get measurement status
 
 ### Agent API (requires agent key)
 
 - `POST /agent-api/agent/register` - Register a new agent
 - `POST /agent-api/agent/{id}/config` - Update agent configuration
 - `POST /agent-api/agent/{id}/health` - Update agent health status
+- `POST /agent-api/agent/{id}/measurement/{id}/status` - Update measurement status
 
 ### Public API
 
@@ -72,7 +74,6 @@ The gateway is configured via **command-line arguments** (not environment variab
 The project has comprehensive tests that **don't require any external dependencies**:
 
 ```bash
-# Run all tests (no database/Kafka required!)
 cargo test
 ```
 
