@@ -38,11 +38,6 @@ services:
     # build: ../../saimiris
     image: ghcr.io/nxthdr/saimiris:main
     command: agent -vv --config /config/agent.yml
-    privileged: true
-    cap_add:
-      - NET_RAW
-      - NET_ADMIN
-      - SYS_ADMIN
     volumes:
       - ./config/agent/agent.yml:/config/agent.yml:ro
     networks:

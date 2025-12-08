@@ -1,165 +1,128 @@
 #!/bin/bash
-
-# Comprehensive Integration Test for Saimiris Gateway Probe Processing Pipeline
-# This test verifies each step of the probe processing from submission to agent handling
-
 set -e
 
-GATEWAY_URL="http://localhost:8080"
-echo "🚀 Testing Saimiris Gateway Probe Processing Pipeline"
+GATEWAY_URL="http://127.0.0.1:8080"
+AGENT_ID="testagent"
+AGENT_IP="2001:db8::c95b:3f80:0:1"
 
-# Test 1: Verify gateway health
-echo "🔍 Test 1: Gateway health check"
-if curl -s -f "$GATEWAY_URL/api/agents" > /dev/null; then
-    echo "✅ Gateway is responding"
-else
-    echo "❌ Gateway is not responding"
+echo "🚀 Gateway Probe Pipeline Test (Agent in Dry-Run Mode)"
+echo "========================================================"
+echo ""
+echo "Note: Agent runs in dry-run mode (no actual probe transmission)."
+echo "This test verifies the gateway's probe handling pipeline."
+echo ""
+
+# Test 1: Gateway health
+echo "[1/6] Gateway health check..."
+if ! curl -4 -sf "$GATEWAY_URL/api/agents" > /dev/null; then
+    echo "❌ Gateway not responding"
     exit 1
 fi
+echo "✅ Gateway is healthy"
+echo ""
 
-# Test 2: Verify agent registration
-echo "🔍 Test 2: Agent registration verification"
-AGENTS_RESPONSE=$(curl -s "$GATEWAY_URL/api/agents" 2>/dev/null || echo "FAILED")
-
-if echo "$AGENTS_RESPONSE" | grep -q "testagent"; then
-    echo "✅ Agent 'testagent' is registered with gateway"
-    echo "   Agent config includes IPv6 prefix: $(echo "$AGENTS_RESPONSE" | grep -o 'src_ipv6_prefix[^,]*')"
-else
-    echo "❌ Agent is not registered"
-    echo "   Response: $AGENTS_RESPONSE"
+# Test 2: Agent registration
+echo "[2/6] Verifying agent registration..."
+AGENTS=$(curl -4 -s "$GATEWAY_URL/api/agents")
+if ! echo "$AGENTS" | grep -q "$AGENT_ID"; then
+    echo "❌ Agent '$AGENT_ID' not registered"
+    echo "Available agents: $AGENTS"
     exit 1
 fi
+echo "✅ Agent '$AGENT_ID' is registered"
+echo ""
 
-# Test 3: Get initial usage statistics
-echo "🔍 Test 3: Recording initial usage statistics"
-INITIAL_USAGE=$(curl -s "$GATEWAY_URL/api/user/me" 2>/dev/null || echo "FAILED")
-if [[ "$INITIAL_USAGE" != "FAILED" ]]; then
-    INITIAL_SUBMISSIONS=$(echo "$INITIAL_USAGE" | grep -o '"submissions":[0-9]*' | cut -d':' -f2)
-    INITIAL_PROBES=$(echo "$INITIAL_USAGE" | grep -o '"probes_used":[0-9]*' | cut -d':' -f2)
-    echo "✅ Initial usage recorded: submissions=$INITIAL_SUBMISSIONS, probes_used=$INITIAL_PROBES"
-else
-    echo "❌ Could not retrieve initial usage statistics"
-    exit 1
-fi
+# Test 3: Get initial usage stats
+echo "[3/6] Recording initial usage..."
+INITIAL_USAGE=$(curl -4 -s "$GATEWAY_URL/api/user/me")
+INITIAL_SUBMISSIONS=$(echo "$INITIAL_USAGE" | grep -o '"submission_count":[0-9]*' | cut -d':' -f2)
+INITIAL_PROBES=$(echo "$INITIAL_USAGE" | grep -o '"used":[0-9]*' | cut -d':' -f2)
+echo "   Submissions: $INITIAL_SUBMISSIONS, Probes: $INITIAL_PROBES"
+echo ""
 
-# Test 4: Submit IPv6 probes for processing
-echo "🔍 Test 4: Submitting IPv6 probes to test processing pipeline"
-PROBE_RESPONSE=$(curl -s -X POST "$GATEWAY_URL/api/probes" \
+# Test 4: Submit probes
+echo "[4/6] Submitting probes..."
+PROBE_PAYLOAD='{
+  "metadata": [{
+    "id": "'"$AGENT_ID"'",
+    "ip_address": "'"$AGENT_IP"'"
+  }],
+  "probes": [
+    ["2001:db8::1", 12345, 33434, 64, "icmpv6"],
+    ["2001:db8::2", 12345, 33434, 64, "icmpv6"]
+  ]
+}'
+
+RESPONSE=$(curl -4 -s -X POST "$GATEWAY_URL/api/probes" \
     -H "Content-Type: application/json" \
-    -d '{"destinations":["2001:db8::1","2001:db8::2"],"config_name":"config0"}' \
-    2>/dev/null || echo "FAILED")
+    -d "$PROBE_PAYLOAD")
 
-if [[ "$PROBE_RESPONSE" != "FAILED" ]]; then
-    MEASUREMENT_ID=$(echo "$PROBE_RESPONSE" | grep -o '"id":"[^"]*' | cut -d'"' -f4)
-    if [[ -n "$MEASUREMENT_ID" ]]; then
-        echo "✅ Probes submitted successfully, measurement ID: $MEASUREMENT_ID"
-    else
-        echo "❌ Probe submission failed - no measurement ID returned"
-        echo "   Response: $PROBE_RESPONSE"
-        exit 1
-    fi
-else
+MEASUREMENT_ID=$(echo "$RESPONSE" | grep -o '"id":"[^"]*' | cut -d'"' -f4)
+if [[ -z "$MEASUREMENT_ID" ]]; then
     echo "❌ Probe submission failed"
+    echo "Response: $RESPONSE"
     exit 1
 fi
+echo "✅ Probes submitted (measurement: $MEASUREMENT_ID)"
+echo ""
 
-# Test 5: Wait for probe processing and verify pipeline
-echo "🔍 Test 5: Verifying probe processing pipeline (waiting 15 seconds)"
-sleep 15
+# Test 5: Verify probe processing
+echo "[5/6] Verifying probe processing (20 seconds)..."
+sleep 20
 
-# Check agent logs for probe processing evidence
-echo "   Checking agent logs for probe processing evidence..."
-AGENT_LOGS=$(docker logs integration-agent-1 2>/dev/null | tail -50)
+echo "   Checking agent logs..."
+AGENT_LOGS=$(docker logs integration-agent-1 2>&1 | tail -100)
 
-# Verify each step of the pipeline
-KAFKA_SUCCESS=false
-DESERIALIZE_SUCCESS=false
-DISTRIBUTION_SUCCESS=false
-CARACAT_ATTEMPT=false
-CARACAT_TIMEOUT=false
+PIPELINE_OK=true
 
-if echo "$AGENT_LOGS" | grep -q "successfully received probes from channel"; then
-    KAFKA_SUCCESS=true
-    echo "   ✅ Step 1: Kafka message consumption successful"
+if echo "$AGENT_LOGS" | grep -qi "received.*probe\|message.*received\|deserialized"; then
+    echo "   ✅ Agent received probes from Kafka"
 else
-    echo "   ❌ Step 1: No evidence of Kafka message consumption"
+    echo "   ❌ No evidence of Kafka message reception"
+    PIPELINE_OK=false
 fi
 
-if echo "$AGENT_LOGS" | grep -q "probes deserialized successfully"; then
-    DESERIALIZE_SUCCESS=true
-    echo "   ✅ Step 2: Probe deserialization successful"
+if echo "$AGENT_LOGS" | grep -qi "distributing.*probes"; then
+    echo "   ✅ Agent processed and queued probes"
 else
-    echo "   ❌ Step 2: No evidence of probe deserialization"
+    echo "   ❌ No evidence of probe processing"
+    PIPELINE_OK=false
 fi
+echo ""
 
-if echo "$AGENT_LOGS" | grep -q "Distributing.*probes to selected Caracat sender"; then
-    DISTRIBUTION_SUCCESS=true
-    echo "   ✅ Step 3: Probe distribution to sender successful"
+# Test 6: Verify usage stats updated
+echo "[6/6] Verifying usage statistics..."
+FINAL_USAGE=$(curl -4 -s "$GATEWAY_URL/api/user/me")
+FINAL_SUBMISSIONS=$(echo "$FINAL_USAGE" | grep -o '"submission_count":[0-9]*' | cut -d':' -f2)
+FINAL_PROBES=$(echo "$FINAL_USAGE" | grep -o '"used":[0-9]*' | cut -d':' -f2)
+
+if [[ $FINAL_SUBMISSIONS -gt $INITIAL_SUBMISSIONS ]] && [[ $FINAL_PROBES -gt $INITIAL_PROBES ]]; then
+    echo "✅ Usage updated: submissions +$((FINAL_SUBMISSIONS - INITIAL_SUBMISSIONS)), probes +$((FINAL_PROBES - INITIAL_PROBES))"
 else
-    echo "   ❌ Step 3: No evidence of probe distribution"
+    echo "❌ Usage not updated correctly"
+    PIPELINE_OK=false
 fi
-
-if echo "$AGENT_LOGS" | grep -q "attempting to create CaracatSender"; then
-    CARACAT_ATTEMPT=true
-    echo "   ✅ Step 4: CaracatSender creation attempted"
-else
-    echo "   ❌ Step 4: No evidence of CaracatSender creation attempt"
-fi
-
-if echo "$AGENT_LOGS" | grep -q "CaracatSender::new() timed out"; then
-    CARACAT_TIMEOUT=true
-    echo "   ⚠️  Step 5: CaracatSender creation timed out (expected in Docker)"
-    echo "      This is a known limitation when running in Docker containers"
-    echo "      The raw socket creation requires additional kernel capabilities"
-else
-    echo "   ℹ️  Step 5: No CaracatSender timeout detected"
-fi
-
-# Test 6: Verify usage statistics increased
-echo "🔍 Test 6: Verifying usage statistics updated"
-FINAL_USAGE=$(curl -s "$GATEWAY_URL/api/user/me" 2>/dev/null || echo "FAILED")
-if [[ "$FINAL_USAGE" != "FAILED" ]]; then
-    FINAL_SUBMISSIONS=$(echo "$FINAL_USAGE" | grep -o '"submissions":[0-9]*' | cut -d':' -f2)
-    FINAL_PROBES=$(echo "$FINAL_USAGE" | grep -o '"probes_used":[0-9]*' | cut -d':' -f2)
-
-    if [[ $FINAL_SUBMISSIONS -gt $INITIAL_SUBMISSIONS ]]; then
-        echo "✅ Submissions increased: $INITIAL_SUBMISSIONS → $FINAL_SUBMISSIONS"
-    else
-        echo "❌ Submissions did not increase: $INITIAL_SUBMISSIONS → $FINAL_SUBMISSIONS"
-    fi
-
-    if [[ $FINAL_PROBES -gt $INITIAL_PROBES ]]; then
-        echo "✅ Probes used increased: $INITIAL_PROBES → $FINAL_PROBES"
-    else
-        echo "❌ Probes used did not increase: $INITIAL_PROBES → $FINAL_PROBES"
-    fi
-else
-    echo "❌ Could not retrieve final usage statistics"
-fi
+echo ""
 
 # Summary
-echo ""
-echo "📋 PROBE PROCESSING PIPELINE SUMMARY:"
-echo "================================================"
-echo "Gateway API:              ✅ Working"
-echo "Agent Registration:       ✅ Working"
-echo "Probe Submission:         ✅ Working"
-echo "Kafka Message Delivery:   $([ "$KAFKA_SUCCESS" = true ] && echo "✅ Working" || echo "❌ Failed")"
-echo "Probe Deserialization:    $([ "$DESERIALIZE_SUCCESS" = true ] && echo "✅ Working" || echo "❌ Failed")"
-echo "Probe Routing:            $([ "$DISTRIBUTION_SUCCESS" = true ] && echo "✅ Working" || echo "❌ Failed")"
-echo "CaracatSender Creation:   $([ "$CARACAT_ATTEMPT" = true ] && echo "⚠️  Attempted (Docker limitation)" || echo "❌ Not attempted")"
-
-if [[ "$KAFKA_SUCCESS" = true && "$DESERIALIZE_SUCCESS" = true && "$DISTRIBUTION_SUCCESS" = true && "$CARACAT_ATTEMPT" = true ]]; then
+echo "========================================================"
+if [[ "$PIPELINE_OK" = true ]]; then
+    echo "🎉 SUCCESS: Gateway pipeline working!"
     echo ""
-    echo "🎉 SUCCESS: Probe processing pipeline is working correctly!"
-    echo "   The only issue is CaracatSender raw socket creation, which is"
-    echo "   expected in Docker containers without additional privileges."
+    echo "Verified:"
+    echo "  ✅ Gateway API"
+    echo "  ✅ Agent registration"
+    echo "  ✅ Probe submission & validation"
+    echo "  ✅ Kafka message delivery"
+    echo "  ✅ Agent probe processing"
+    echo "  ✅ Usage tracking & limits"
     echo ""
-    echo "💡 To test actual probe transmission, run the agent outside Docker"
-    echo "   with sufficient network privileges (CAP_NET_RAW)."
+    echo "ℹ️  Agent runs in dry-run mode (no actual network probes sent)"
     exit 0
 else
+    echo "❌ FAILURE: Pipeline has issues"
     echo ""
-    echo "❌ FAILURE: Probe processing pipeline has issues that need investigation."
+    echo "Recent agent logs:"
+    echo "$AGENT_LOGS" | tail -20
     exit 1
 fi

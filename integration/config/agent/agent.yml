@@ -10,12 +10,14 @@ gateway:
 caracat:
   - name: config0
     instance_id: 0
+    dry_run: true
     integrity_check: false
     src_ipv6_prefix: 2001:db8::/64
     probing_rate: 5
     interface: eth0
   - name: config1
     instance_id: 1
+    dry_run: true
     integrity_check: false
     src_ipv6_prefix: 2001:db8::/64
     probing_rate: 5
