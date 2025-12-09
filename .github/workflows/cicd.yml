@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
-    - run: sudo apt install libpcap-dev libsasl2-dev libssl-dev capnproto
+    - run: sudo apt install libsasl2-dev libssl-dev capnproto
     - uses: Swatinem/rust-cache@v2
     - run: |
         cargo check --locked

@@ -173,7 +173,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Create app state with agent key for authentication
     let state = AppState {
-        agent_store,
+        agent_store: agent_store.clone(),
         agent_key: cli.agent_key,
         kafka_config,
         kafka_producer,
@@ -186,6 +186,20 @@ async fn main() -> anyhow::Result<()> {
     if cli.bypass_jwt {
         warn!("⚠️ JWT validation bypass is enabled!");
     }
+
+    // Spawn background task to clean up stale agents every 5 minutes
+    let cleanup_agent_store = agent_store.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(300)); // 5 minutes
+        loop {
+            interval.tick().await;
+            let max_age = chrono::Duration::minutes(10);
+            let removed = cleanup_agent_store.remove_stale_agents(max_age).await;
+            if !removed.is_empty() {
+                info!("Removed {} stale agents: {:?}", removed.len(), removed);
+            }
+        }
+    });
 
     let app = create_app(state);
 

@@ -118,7 +118,9 @@ async fn validate_agent_key(
 
 // Client-facing handlers (regular REST API)
 async fn list_agents(State(state): State<AppState>) -> Json<Vec<Agent>> {
-    let agents = state.agent_store.list_all().await;
+    // Only return agents that have sent a health check in the last 10 minutes
+    let max_age = chrono::Duration::minutes(10);
+    let agents = state.agent_store.list_healthy_agents(max_age).await;
     Json(agents)
 }
 

@@ -161,6 +161,46 @@ impl AgentStore {
         let mut agents = self.agents.write().await;
         agents.remove(id).is_some()
     }
+
+    /// Remove agents that haven't sent a health check in the specified duration
+    pub async fn remove_stale_agents(&self, max_age: chrono::Duration) -> Vec<String> {
+        let mut agents = self.agents.write().await;
+        let now = Utc::now();
+        let mut removed_ids = Vec::new();
+
+        agents.retain(|id, agent| {
+            if let Some(health) = &agent.health {
+                let age = now.signed_duration_since(health.last_check);
+                if age > max_age {
+                    removed_ids.push(id.clone());
+                    return false;
+                }
+            }
+            true
+        });
+
+        removed_ids
+    }
+
+    /// Get all agents that have sent a health check within the specified duration
+    pub async fn list_healthy_agents(&self, max_age: chrono::Duration) -> Vec<Agent> {
+        let agents = self.agents.read().await;
+        let now = Utc::now();
+
+        agents
+            .values()
+            .filter(|agent| {
+                if let Some(health) = &agent.health {
+                    let age = now.signed_duration_since(health.last_check);
+                    age <= max_age
+                } else {
+                    // Agents without health status are excluded
+                    false
+                }
+            })
+            .cloned()
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -214,5 +254,90 @@ mod tests {
 
         let agent = store.get("agent1").await.unwrap();
         assert_eq!(agent.health, Some(health));
+    }
+
+    #[tokio::test]
+    async fn test_remove_stale_agents() {
+        let store = AgentStore::new();
+
+        // Add agent with recent health check
+        store
+            .add_agent("agent1".to_string(), "secret1".to_string())
+            .await
+            .unwrap();
+        let recent_health = HealthStatus {
+            healthy: true,
+            last_check: Utc::now(),
+            message: None,
+        };
+        store.update_health("agent1", recent_health).await;
+
+        // Add agent with old health check (11 minutes ago)
+        store
+            .add_agent("agent2".to_string(), "secret2".to_string())
+            .await
+            .unwrap();
+        let old_health = HealthStatus {
+            healthy: true,
+            last_check: Utc::now() - chrono::Duration::minutes(11),
+            message: None,
+        };
+        store.update_health("agent2", old_health).await;
+
+        // Remove agents older than 10 minutes
+        let removed = store
+            .remove_stale_agents(chrono::Duration::minutes(10))
+            .await;
+
+        assert_eq!(removed.len(), 1);
+        assert_eq!(removed[0], "agent2");
+
+        // Verify agent1 still exists
+        assert!(store.get("agent1").await.is_some());
+        // Verify agent2 was removed
+        assert!(store.get("agent2").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_list_healthy_agents() {
+        let store = AgentStore::new();
+
+        // Add agent with recent health check
+        store
+            .add_agent("agent1".to_string(), "secret1".to_string())
+            .await
+            .unwrap();
+        let recent_health = HealthStatus {
+            healthy: true,
+            last_check: Utc::now(),
+            message: None,
+        };
+        store.update_health("agent1", recent_health).await;
+
+        // Add agent with old health check
+        store
+            .add_agent("agent2".to_string(), "secret2".to_string())
+            .await
+            .unwrap();
+        let old_health = HealthStatus {
+            healthy: true,
+            last_check: Utc::now() - chrono::Duration::minutes(11),
+            message: None,
+        };
+        store.update_health("agent2", old_health).await;
+
+        // Add agent without health check
+        store
+            .add_agent("agent3".to_string(), "secret3".to_string())
+            .await
+            .unwrap();
+
+        // List agents with health check in last 10 minutes
+        let healthy = store
+            .list_healthy_agents(chrono::Duration::minutes(10))
+            .await;
+
+        assert_eq!(healthy.len(), 1);
+        assert_eq!(healthy[0].id, "agent1");
     }
 }
