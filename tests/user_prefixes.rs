@@ -33,8 +33,8 @@ async fn test_user_prefixes_endpoint() {
         agent_key: "test-key".to_string(),
         kafka_config,
         kafka_producer,
-        logto_jwks_uri: Some("https://test.logto.app/oidc/jwks".to_string()),
-        logto_issuer: Some("https://test.logto.app/oidc".to_string()),
+        auth0_jwks_uri: Some("https://test.auth0.com/.well-known/jwks.json".to_string()),
+        auth0_issuer: Some("https://test.auth0.com/".to_string()),
         bypass_jwt_validation: true,
         database: create_mock_database().await,
     };
@@ -152,8 +152,8 @@ async fn test_multiple_agents_and_prefixes() {
         agent_key: "test-key".to_string(),
         kafka_config,
         kafka_producer,
-        logto_jwks_uri: Some("https://test.logto.app/oidc/jwks".to_string()),
-        logto_issuer: Some("https://test.logto.app/oidc".to_string()),
+        auth0_jwks_uri: Some("https://test.auth0.com/.well-known/jwks.json".to_string()),
+        auth0_issuer: Some("https://test.auth0.com/".to_string()),
         bypass_jwt_validation: true,
         database: create_mock_database().await,
     };

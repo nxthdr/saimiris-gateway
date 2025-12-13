@@ -48,12 +48,12 @@ pub struct Cli {
     #[arg(long = "kafka-sasl-mechanism", default_value = "SCRAM-SHA-512")]
     pub kafka_sasl_mechanism: String,
 
-    /// LogTo JWKS URI for JWT validation
-    #[arg(long = "logto-jwks-uri")]
-    pub logto_jwks_uri: Option<String>,
-    /// LogTo issuer for JWT validation
-    #[arg(long = "logto-issuer")]
-    pub logto_issuer: Option<String>,
+    /// Auth0 JWKS URI for JWT validation
+    #[arg(long = "auth0-jwks-uri")]
+    pub auth0_jwks_uri: Option<String>,
+    /// Auth0 issuer for JWT validation
+    #[arg(long = "auth0-issuer")]
+    pub auth0_issuer: Option<String>,
 
     /// Bypass JWT validation (for development only)
     #[arg(long = "bypass-jwt", default_value = "false")]
@@ -92,16 +92,16 @@ async fn main() -> anyhow::Result<()> {
     let agent_store = AgentStore::new();
 
     // Log JWT configuration from CLI parameters
-    if let Some(ref jwks_uri) = cli.logto_jwks_uri {
-        info!("LogTo JWKS URI is set to: {}", jwks_uri);
+    if let Some(ref jwks_uri) = cli.auth0_jwks_uri {
+        info!("Auth0 JWKS URI is set to: {}", jwks_uri);
     } else {
-        warn!("LogTo JWKS URI is not set");
+        warn!("Auth0 JWKS URI is not set");
     }
 
-    if let Some(ref issuer) = cli.logto_issuer {
-        info!("LogTo issuer is set to: {}", issuer);
+    if let Some(ref issuer) = cli.auth0_issuer {
+        info!("Auth0 issuer is set to: {}", issuer);
     } else {
-        warn!("LogTo issuer is not set");
+        warn!("Auth0 issuer is not set");
     }
 
     // Initialize Kafka configuration from CLI parameters
@@ -177,8 +177,8 @@ async fn main() -> anyhow::Result<()> {
         agent_key: cli.agent_key,
         kafka_config,
         kafka_producer,
-        logto_jwks_uri: cli.logto_jwks_uri.clone(),
-        logto_issuer: cli.logto_issuer.clone(),
+        auth0_jwks_uri: cli.auth0_jwks_uri.clone(),
+        auth0_issuer: cli.auth0_issuer.clone(),
         bypass_jwt_validation: cli.bypass_jwt,
         database,
     };

@@ -22,8 +22,8 @@ The gateway is configured via **command-line arguments** (not environment variab
   --database-url "postgresql://user:password@localhost/saimiris_gateway" \
   --agent-key "your-secret-agent-key" \
   --kafka-brokers "localhost:9092" \
-  --logto-jwks-uri "https://your-logto-instance.com/oidc/jwks" \
-  --logto-issuer "https://your-logto-instance.com/oidc"
+  --auth0-jwks-uri "https://your-domain.auth0.com/.well-known/jwks.json" \
+  --auth0-issuer "https://your-domain.auth0.com/"
 
 # Development mode (bypass JWT)
 ./saimiris-gateway \
@@ -42,8 +42,8 @@ The gateway is configured via **command-line arguments** (not environment variab
 - `--database-url`: PostgreSQL connection string (required)
 - `--agent-key`: Authentication key for agents (required)
 - `--kafka-brokers`: Kafka broker addresses (default: localhost:9092)
-- `--logto-jwks-uri`: LogTo JWKS URI for JWT validation
-- `--logto-issuer`: LogTo issuer for JWT validation
+- `--auth0-jwks-uri`: Auth0 JWKS URI for JWT validation
+- `--auth0-issuer`: Auth0 issuer for JWT validation
 - `--bypass-jwt`: Bypass JWT validation (development only)
 
 ## API Endpoints

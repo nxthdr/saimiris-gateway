@@ -1,5 +1,5 @@
 use axum_test::TestServer;
-use saimiris_gateway::{agent::AgentStore, create_app, kafka, AppState, database::Database};
+use saimiris_gateway::{AppState, agent::AgentStore, create_app, database::Database, kafka};
 use serde_json::json;
 
 async fn create_mock_database() -> Database {
@@ -28,8 +28,8 @@ async fn test_json_error_responses() {
         agent_key: "test-key".to_string(),
         kafka_config,
         kafka_producer,
-        logto_jwks_uri: Some("https://test.logto.app/oidc/jwks".to_string()),
-        logto_issuer: Some("https://test.logto.app/oidc".to_string()),
+        auth0_jwks_uri: Some("https://test.auth0.com/.well-known/jwks.json".to_string()),
+        auth0_issuer: Some("https://test.auth0.com/".to_string()),
         bypass_jwt_validation: true, // Bypass JWT validation for testing
         database: create_mock_database().await,
     };
@@ -112,8 +112,8 @@ async fn test_error_structure_consistency() {
         agent_key: "test-key".to_string(),
         kafka_config,
         kafka_producer,
-        logto_jwks_uri: Some("https://test.logto.app/oidc/jwks".to_string()),
-        logto_issuer: Some("https://test.logto.app/oidc".to_string()),
+        auth0_jwks_uri: Some("https://test.auth0.com/.well-known/jwks.json".to_string()),
+        auth0_issuer: Some("https://test.auth0.com/".to_string()),
         bypass_jwt_validation: true,
         database: create_mock_database().await,
     };
@@ -123,17 +123,23 @@ async fn test_error_structure_consistency() {
     // Test various error conditions and ensure they all have consistent structure
     let test_cases = vec![
         // Empty probe list
-        (json!({
-            "probes": [],
-            "metadata": []
-        }), 400),
+        (
+            json!({
+                "probes": [],
+                "metadata": []
+            }),
+            400,
+        ),
         // Missing metadata
-        (json!({
-            "probes": [
-                ["8.8.8.8", 12345, 80, 64, "tcp"]
-            ],
-            "metadata": []
-        }), 400),
+        (
+            json!({
+                "probes": [
+                    ["8.8.8.8", 12345, 80, 64, "tcp"]
+                ],
+                "metadata": []
+            }),
+            400,
+        ),
     ];
 
     for (request_body, expected_status) in test_cases {
@@ -147,14 +153,29 @@ async fn test_error_structure_consistency() {
 
         // Check if response is JSON and has expected structure
         let response_body: serde_json::Value = response.json();
-        assert!(response_body.get("error").is_some(), "Error response should have 'error' field");
-        assert!(response_body.get("message").is_some(), "Error response should have 'message' field");
+        assert!(
+            response_body.get("error").is_some(),
+            "Error response should have 'error' field"
+        );
+        assert!(
+            response_body.get("message").is_some(),
+            "Error response should have 'message' field"
+        );
 
         // Ensure error and message are present and correctly typed
-        assert!(response_body["error"].is_number(), "Error field should be a number");
-        assert!(response_body["message"].is_string(), "Message field should be a string");
+        assert!(
+            response_body["error"].is_number(),
+            "Error field should be a number"
+        );
+        assert!(
+            response_body["message"].is_string(),
+            "Message field should be a string"
+        );
 
         // Ensure message is not empty
-        assert!(!response_body["message"].as_str().unwrap().is_empty(), "Message should not be empty");
+        assert!(
+            !response_body["message"].as_str().unwrap().is_empty(),
+            "Message should not be empty"
+        );
     }
 }

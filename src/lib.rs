@@ -33,8 +33,8 @@ pub struct AppState {
     pub agent_key: String,
     pub kafka_config: kafka::KafkaConfig,
     pub kafka_producer: rdkafka::producer::FutureProducer,
-    pub logto_jwks_uri: Option<String>,
-    pub logto_issuer: Option<String>,
+    pub auth0_jwks_uri: Option<String>,
+    pub auth0_issuer: Option<String>,
     pub bypass_jwt_validation: bool,
     pub database: Database,
 }
