@@ -1,6 +1,6 @@
 use axum::{body::Body, http::Request};
 use rdkafka::config::ClientConfig;
-use saimiris_gateway::{AppState, agent::AgentStore, kafka, database::Database};
+use saimiris_gateway::{AppState, agent::AgentStore, database::Database, kafka};
 
 async fn create_mock_database() -> Database {
     // Create a mock database that doesn't require PostgreSQL
@@ -26,8 +26,8 @@ async fn test_agent_key_middleware_with_valid_key() {
         agent_key: "test-key".to_string(),
         kafka_config,
         kafka_producer,
-        logto_jwks_uri: Some("https://test.logto.app/oidc/jwks".to_string()),
-        logto_issuer: Some("https://test.logto.app/oidc".to_string()),
+        auth0_jwks_uri: Some("https://test.auth0.com/.well-known/jwks.json".to_string()),
+        auth0_issuer: Some("https://test.auth0.com/".to_string()),
         bypass_jwt_validation: false,
         database: create_mock_database().await,
     };
@@ -67,8 +67,8 @@ async fn test_agent_key_middleware_with_invalid_key() {
         agent_key: "test-key".to_string(),
         kafka_config,
         kafka_producer,
-        logto_jwks_uri: Some("https://test.logto.app/oidc/jwks".to_string()),
-        logto_issuer: Some("https://test.logto.app/oidc".to_string()),
+        auth0_jwks_uri: Some("https://test.auth0.com/.well-known/jwks.json".to_string()),
+        auth0_issuer: Some("https://test.auth0.com/".to_string()),
         bypass_jwt_validation: false,
         database: create_mock_database().await,
     };
@@ -107,8 +107,8 @@ async fn test_agent_key_middleware_without_header() {
         agent_key: "test-key".to_string(),
         kafka_config,
         kafka_producer,
-        logto_jwks_uri: Some("https://test.logto.app/oidc/jwks".to_string()),
-        logto_issuer: Some("https://test.logto.app/oidc".to_string()),
+        auth0_jwks_uri: Some("https://test.auth0.com/.well-known/jwks.json".to_string()),
+        auth0_issuer: Some("https://test.auth0.com/".to_string()),
         bypass_jwt_validation: false,
         database: create_mock_database().await,
     };
@@ -143,8 +143,8 @@ async fn test_agent_key_middleware_with_malformed_header() {
         agent_key: "test-key".to_string(),
         kafka_config,
         kafka_producer,
-        logto_jwks_uri: Some("https://test.logto.app/oidc/jwks".to_string()),
-        logto_issuer: Some("https://test.logto.app/oidc".to_string()),
+        auth0_jwks_uri: Some("https://test.auth0.com/.well-known/jwks.json".to_string()),
+        auth0_issuer: Some("https://test.auth0.com/".to_string()),
         bypass_jwt_validation: false,
         database: create_mock_database().await,
     };
@@ -185,8 +185,8 @@ async fn test_app_state_creation() {
         agent_key: agent_key.clone(),
         kafka_config,
         kafka_producer,
-        logto_jwks_uri: Some("https://test.logto.app/oidc/jwks".to_string()),
-        logto_issuer: Some("https://test.logto.app/oidc".to_string()),
+        auth0_jwks_uri: Some("https://test.auth0.com/.well-known/jwks.json".to_string()),
+        auth0_issuer: Some("https://test.auth0.com/".to_string()),
         bypass_jwt_validation: false,
         database: create_mock_database().await,
     };
