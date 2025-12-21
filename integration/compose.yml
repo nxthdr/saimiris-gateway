@@ -1,12 +1,13 @@
 services:
-  postgres:
+  saimiris-postgres:
     image: postgres:17
+    container_name: saimiris-postgres
     environment:
       POSTGRES_DB: saimiris_gateway
       POSTGRES_USER: saimiris_user
       POSTGRES_PASSWORD: saimiris_password
     networks:
-      integration:
+      saimiris_integration:
         ipv4_address: 10.0.0.50
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U saimiris_user -d saimiris_gateway"]
@@ -14,48 +15,51 @@ services:
       timeout: 5s
       retries: 5
 
-  redpanda:
+  saimiris-redpanda:
     image: redpandadata/redpanda:latest
+    container_name: saimiris-redpanda
     volumes:
       - ./config/redpanda/redpanda.yml:/etc/redpanda/redpanda.yaml:ro
     networks:
-      integration:
+      saimiris_integration:
         ipv4_address: 10.0.0.100
 
-  gateway:
+  saimiris-gateway:
     build: ..
+    container_name: saimiris-gateway
     command: -v --kafka-brokers=10.0.0.100:9092 --agent-key=testkey --bypass-jwt --database-url=postgresql://saimiris_user:saimiris_password@10.0.0.50/saimiris_gateway
     ports:
       - "8080:8080"
     networks:
-      integration:
+      saimiris_integration:
         ipv4_address: 10.0.0.10
     depends_on:
-      - postgres
-      - redpanda
+      - saimiris-postgres
+      - saimiris-redpanda
 
-  agent:
+  saimiris-agent:
     # build: ../../saimiris
     image: ghcr.io/nxthdr/saimiris:main
+    container_name: saimiris-agent
     command: agent -vv --config /config/agent.yml
     volumes:
       - ./config/agent/agent.yml:/config/agent.yml:ro
     networks:
-      integration:
+      saimiris_integration:
         ipv4_address: 10.0.0.20
-        ipv6_address: 2001:db8::c95b:3f80:0:1
+        ipv6_address: 2001:db8:2::c95b:3f80:0:1
     depends_on:
-      - redpanda
-      - gateway
+      - saimiris-redpanda
+      - saimiris-gateway
 
 networks:
-  integration:
+  saimiris_integration:
     driver: bridge
     enable_ipv6: true
     ipam:
       config:
         - subnet: 10.0.0.0/24
           gateway: 10.0.0.1
-        - subnet: 2001:db8::/64
-          gateway: 2001:db8::1
+        - subnet: 2001:db8:2::/64
+          gateway: 2001:db8:2::1
 
