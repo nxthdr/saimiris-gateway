@@ -32,7 +32,7 @@ axum-test = "17.0"
 criterion = "0.8"
 
 [build-dependencies]
-capnpc = "0.23"
+capnpc = "0.24"
 
 [[bench]]
 name = "probes_benchmark"
