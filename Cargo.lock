@@ -285,12 +285,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "capnpc"
-version = "0.24.1"
+name = "capnp"
+version = "0.25.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "642d771bf5096ad1963fdbb9839f22e7bb1e308a2d1456fb1ad6cc99bb691115"
+checksum = "fe8af2e2d255489928e31504fa51d86a41d040179098a8ad6828e0d11c54dcd6"
 dependencies = [
- "capnp",
+ "embedded-io",
+]
+
+[[package]]
+name = "capnpc"
+version = "0.25.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d6cdfa6b0df161a71201367910265b97180541ecdb48bd08e05ef8694c295d1f"
+dependencies = [
+ "capnp 0.25.0",
 ]
 
 [[package]]
@@ -2301,7 +2310,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2359,7 +2368,7 @@ dependencies = [
  "security-framework 3.5.1",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.1",
 ]
 
 [[package]]
@@ -2399,7 +2408,7 @@ dependencies = [
  "anyhow",
  "axum",
  "axum-test",
- "capnp",
+ "capnp 0.24.1",
  "capnpc",
  "chrono",
  "clap",
@@ -2993,7 +3002,7 @@ dependencies = [
  "getrandom 0.3.3",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3628,7 +3637,7 @@ version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf221c93e13a30d793f7645a0e7762c55d169dbb0a49671918a2319d289b10bb"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
