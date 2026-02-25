@@ -11,7 +11,7 @@ chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.5", features = ["derive"] }
 clap-verbosity-flag = {version = "3.0.2", features = ["tracing"]}
 jsonwebtoken = { version = "10.0", features = ["rust_crypto"] }
-rdkafka = { version = "0.37.0", features = ["sasl", "ssl"] }
+rdkafka = { version = "0.39.0", features = ["sasl", "ssl"] }
 reqwest = { version = "0.13", features = ["json", "native-tls-vendored"] }
 tokio = { version = "1.0", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
