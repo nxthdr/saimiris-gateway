@@ -37,7 +37,7 @@ jobs:
           echo "CLAUDE_PATH=$(which claude)" >> $GITHUB_ENV
 
       - name: Run Claude Code
-        uses: anthropics/claude-code-action@01e756b34ef7a1447e9508f674143b07d20c2631
+        uses: anthropics/claude-code-action@3428ca8991d4611b464661a70b0725ae459c894d
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           path_to_claude_code_executable: ${{ env.CLAUDE_PATH }}
