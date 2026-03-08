@@ -34,7 +34,7 @@ async fn test_json_error_responses() {
         database: create_mock_database().await,
     };
     let app = create_app(state.clone());
-    let server = TestServer::new(app);
+    let server = TestServer::new(app).unwrap();
 
     // Test 1: Empty probe list should return JSON error
     let empty_probe_request = json!({
@@ -118,7 +118,7 @@ async fn test_error_structure_consistency() {
         database: create_mock_database().await,
     };
     let app = create_app(state.clone());
-    let server = TestServer::new(app);
+    let server = TestServer::new(app).unwrap();
 
     // Test various error conditions and ensure they all have consistent structure
     let test_cases = vec![

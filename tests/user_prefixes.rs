@@ -64,7 +64,7 @@ async fn test_user_prefixes_endpoint() {
         .await;
 
     let app = create_app(state);
-    let server = TestServer::new(app);
+    let server = TestServer::new(app).unwrap();
 
     // Test the user prefixes endpoint
     let response = server
@@ -186,7 +186,7 @@ async fn test_multiple_agents_and_prefixes() {
     agent_store.update_config("agent-us", config_us).await;
 
     let app = create_app(state);
-    let server = TestServer::new(app);
+    let server = TestServer::new(app).unwrap();
 
     // Test the user prefixes endpoint
     let response = server
