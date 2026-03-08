@@ -34,7 +34,7 @@ async fn test_agent_api_scenario() {
         database: create_mock_database().await,
     };
     let app = create_app(state.clone());
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // 1. Register agent
     let register_body = json!({"id": "agent1", "secret": "s3cr3t"});
