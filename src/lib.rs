@@ -932,7 +932,7 @@ fn generate_deterministic_user_id(user_hash: &str) -> u32 {
 
 /// Generate a random 32-bit user ID for fallback when deterministic generation collides
 fn generate_random_user_id() -> u32 {
-    use rand::Rng;
+    use rand::RngExt;
     let mut rng = rand::rng();
 
     // Generate a random 32-bit number within our valid range
