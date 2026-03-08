@@ -78,10 +78,10 @@ pub async fn send_to_kafka(
     let delivery_status = producer.send(record, Duration::from_secs(0)).await;
 
     match delivery_status {
-        Ok((partition, offset)) => {
+        Ok(delivery) => {
             debug!(
                 "Message sent to topic '{}', partition {} at offset {}",
-                topic, partition, offset
+                topic, delivery.partition, delivery.offset
             );
             Ok(())
         }
