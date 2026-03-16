@@ -1,5 +1,6 @@
 use anyhow::Result;
 use clap_verbosity_flag::{InfoLevel, Verbosity};
+use metrics_exporter_prometheus::PrometheusBuilder;
 use std::net::SocketAddr;
 use tracing::{error, info, warn};
 
@@ -66,6 +67,10 @@ pub struct Cli {
     )]
     pub database_url: String,
 
+    /// Metrics listen address
+    #[arg(long = "metrics-address", default_value = "0.0.0.0:9090")]
+    pub metrics_address: String,
+
     /// Verbosity level
     #[clap(flatten)]
     verbose: Verbosity<InfoLevel>,
@@ -82,12 +87,49 @@ fn set_tracing(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
+fn set_metrics(metrics_address: SocketAddr) {
+    let prom_builder = PrometheusBuilder::new();
+    prom_builder
+        .with_http_listener(metrics_address)
+        .install()
+        .expect("Failed to install Prometheus metrics exporter");
+
+    metrics::describe_counter!(
+        "saimiris_gateway_probes_submitted_total",
+        "Total number of probes submitted"
+    );
+    metrics::describe_counter!(
+        "saimiris_gateway_measurements_created_total",
+        "Total number of measurements created"
+    );
+    metrics::describe_counter!(
+        "saimiris_gateway_agents_registered_total",
+        "Total number of agent registrations"
+    );
+    metrics::describe_counter!(
+        "saimiris_gateway_kafka_errors_total",
+        "Total number of Kafka send errors"
+    );
+    metrics::describe_counter!(
+        "saimiris_gateway_http_requests_total",
+        "Total number of HTTP requests"
+    );
+    metrics::describe_gauge!(
+        "saimiris_gateway_agents_active",
+        "Number of currently active agents"
+    );
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Parse command line arguments
     let cli = Cli::parse();
 
     set_tracing(&cli)?;
+
+    let metrics_addr: SocketAddr = cli.metrics_address.parse()?;
+    set_metrics(metrics_addr);
+    info!("Metrics server listening on {}", metrics_addr);
 
     let agent_store = AgentStore::new();
 

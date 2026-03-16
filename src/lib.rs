@@ -16,6 +16,7 @@ use axum::{
 };
 use hex;
 use ipnet::Ipv6Net;
+use metrics::{counter, gauge};
 use rdkafka::message::{Header, OwnedHeaders};
 use sha2::{Digest, Sha256};
 use std::net::{IpAddr, Ipv6Addr};
@@ -121,6 +122,7 @@ async fn list_agents(State(state): State<AppState>) -> Json<Vec<Agent>> {
     // Only return agents that have sent a health check in the last 10 minutes
     let max_age = chrono::Duration::minutes(10);
     let agents = state.agent_store.list_healthy_agents(max_age).await;
+    gauge!("saimiris_gateway_agents_active").set(agents.len() as f64);
     Json(agents)
 }
 
@@ -304,6 +306,7 @@ async fn register_agent(
     {
         Ok(()) => {
             let agent = state.agent_store.get(&payload.id).await.unwrap();
+            counter!("saimiris_gateway_agents_registered_total").increment(1);
             debug!("Agent '{}' registered successfully", agent.id);
             Ok(Json(agent))
         }
@@ -580,6 +583,7 @@ async fn submit_probes(
                 topic
             ),
             Err(err) => {
+                counter!("saimiris_gateway_kafka_errors_total").increment(1);
                 error!("Failed to send probe batch to Kafka: {}", err);
                 return Err((
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -612,6 +616,9 @@ async fn submit_probes(
         error!("Failed to record probe usage in database: {}", err);
         // Don't fail the request if database recording fails
     }
+
+    counter!("saimiris_gateway_measurements_created_total").increment(1);
+    counter!("saimiris_gateway_probes_submitted_total").increment(total_probe_count as u64);
 
     Ok(Json(SubmitProbesResponse {
         id: measurement_id.to_string(),
