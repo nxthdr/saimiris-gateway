@@ -429,7 +429,10 @@ pub fn validate_json_probe(probe: &Value) -> Result<(), String> {
                 if let Value::Number(n) = &arr[idx] {
                     if let Some(port) = n.as_u64() {
                         if port == 0 || port > u16::MAX as u64 {
-                            return Err(format!("Invalid {}: {}", field_name.to_lowercase(), port));
+                            return Err(format!(
+                                "Invalid {} (must be 1-65535; for ICMP/ICMPv6 ports are ignored by the probe, use any non-zero value e.g. 1): {}",
+                                field_name.to_lowercase(), port
+                            ));
                         }
                     } else {
                         return Err(format!("{} must be a positive integer", field_name));
