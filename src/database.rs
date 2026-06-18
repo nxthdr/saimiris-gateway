@@ -1242,6 +1242,12 @@ mod tests {
             .await
             .unwrap();
 
+        // The Mock derives `last_updated` from `Utc::now()`, so a real (small)
+        // delay is needed to guarantee m2 sorts strictly before m1 — two
+        // consecutive in-memory ops can otherwise tie on the same instant and
+        // make the order of the pair non-deterministic.
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+
         // Second measurement (touched later, so it should sort first).
         let m2 = Uuid::new_v4();
         db.create_measurement_tracking(user_hash, m2, "agent1", 10)

@@ -628,10 +628,13 @@ async fn submit_probes(
     }))
 }
 
-// Query parameters for listing a user's measurements
+// Query parameters for listing a user's measurements.
+// `limit` is taken as a raw string and parsed in the handler so that malformed
+// input returns the standard JSON error shape rather than Axum's plain-text
+// query-rejection (which would be inconsistent with the rest of the API).
 #[derive(serde::Deserialize)]
 struct ListMeasurementsQuery {
-    limit: Option<i32>,
+    limit: Option<String>,
 }
 
 // Handler for listing the authenticated user's recent measurements (client-facing)
@@ -641,7 +644,21 @@ async fn list_measurements_handler(
     Query(params): Query<ListMeasurementsQuery>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let user_hash = crate::hash_user_identifier(&auth_info.sub);
-    let limit = params.limit.unwrap_or(20).clamp(1, 100);
+    let limit = match params.limit.as_deref() {
+        None | Some("") => 20,
+        Some(raw) => match raw.parse::<i64>() {
+            Ok(n) => n.clamp(1, 100) as i32,
+            Err(_) => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "error": 400,
+                        "message": "Invalid 'limit' query parameter: expected an integer between 1 and 100"
+                    })),
+                ));
+            }
+        },
+    };
 
     match state
         .database
