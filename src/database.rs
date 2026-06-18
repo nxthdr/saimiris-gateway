@@ -737,6 +737,78 @@ impl Database {
         }
     }
 
+    /// List a user's most recent measurements, newest first.
+    pub async fn list_user_measurements(
+        &self,
+        user_hash: &str,
+        limit: i32,
+    ) -> Result<Vec<MeasurementStatus>, sqlx::Error> {
+        match &self.impl_ {
+            DatabaseImpl::Real(pool) => {
+                let measurements = sqlx::query_as::<_, MeasurementStatus>(
+                    r#"SELECT
+                       measurement_id,
+                       user_hash,
+                       total_agents,
+                       total_expected_probes,
+                       total_sent_probes,
+                       completed_agents,
+                       measurement_complete,
+                       started_at,
+                       last_updated
+                       FROM measurement_status
+                       WHERE user_hash = $1
+                       ORDER BY last_updated DESC
+                       LIMIT $2"#,
+                )
+                .bind(user_hash)
+                .bind(limit)
+                .fetch_all(pool)
+                .await?;
+
+                Ok(measurements)
+            }
+            DatabaseImpl::Mock(storage) => {
+                let tracking = storage.measurement_tracking.lock().unwrap();
+
+                // Aggregate the per-agent tracking rows into one status per
+                // measurement, mirroring the `measurement_status` SQL view.
+                let mut by_measurement: std::collections::HashMap<Uuid, Vec<&MeasurementTracking>> =
+                    std::collections::HashMap::new();
+                for t in tracking.iter().filter(|t| t.user_hash == user_hash) {
+                    by_measurement.entry(t.measurement_id).or_default().push(t);
+                }
+
+                let mut measurements: Vec<MeasurementStatus> = by_measurement
+                    .into_iter()
+                    .map(|(measurement_id, records)| {
+                        let total_agents = records.len() as i64;
+                        let completed_agents =
+                            records.iter().filter(|r| r.is_complete).count() as i64;
+                        MeasurementStatus {
+                            measurement_id,
+                            user_hash: user_hash.to_string(),
+                            total_agents,
+                            total_expected_probes: records
+                                .iter()
+                                .map(|r| r.expected_probes as i64)
+                                .sum(),
+                            total_sent_probes: records.iter().map(|r| r.sent_probes as i64).sum(),
+                            completed_agents,
+                            measurement_complete: completed_agents == total_agents,
+                            started_at: records.iter().map(|r| r.created_at).min().unwrap(),
+                            last_updated: records.iter().map(|r| r.updated_at).max().unwrap(),
+                        }
+                    })
+                    .collect();
+
+                measurements.sort_by(|a, b| b.last_updated.cmp(&a.last_updated));
+                measurements.truncate(limit as usize);
+                Ok(measurements)
+            }
+        }
+    }
+
     /// Get all measurement tracking entries for a measurement
     pub async fn get_measurement_tracking(
         &self,
@@ -1148,6 +1220,58 @@ mod tests {
             assert_eq!(tracking.sent_probes, 100);
             assert!(tracking.is_complete);
         }
+    }
+
+    #[tokio::test]
+    async fn test_list_user_measurements() {
+        let db = Database::new_mock();
+        db.initialize().await.unwrap();
+
+        let user_hash = "test_user_hash";
+        let other_user_hash = "other_user_hash";
+
+        // First measurement: two agents, one complete.
+        let m1 = Uuid::new_v4();
+        db.create_measurement_tracking(user_hash, m1, "agent1", 100)
+            .await
+            .unwrap();
+        db.create_measurement_tracking(user_hash, m1, "agent2", 100)
+            .await
+            .unwrap();
+        db.update_measurement_probe_count(m1, user_hash, "agent1", 100, true)
+            .await
+            .unwrap();
+
+        // Second measurement (touched later, so it should sort first).
+        let m2 = Uuid::new_v4();
+        db.create_measurement_tracking(user_hash, m2, "agent1", 10)
+            .await
+            .unwrap();
+        db.update_measurement_probe_count(m2, user_hash, "agent1", 10, true)
+            .await
+            .unwrap();
+
+        // A different user's measurement must not leak into the list.
+        let m3 = Uuid::new_v4();
+        db.create_measurement_tracking(other_user_hash, m3, "agent1", 5)
+            .await
+            .unwrap();
+
+        let measurements = db.list_user_measurements(user_hash, 20).await.unwrap();
+
+        // Only this user's two measurements, newest (m2) first.
+        assert_eq!(measurements.len(), 2);
+        assert_eq!(measurements[0].measurement_id, m2);
+        assert!(measurements[0].measurement_complete);
+        assert_eq!(measurements[1].measurement_id, m1);
+        assert_eq!(measurements[1].total_agents, 2);
+        assert_eq!(measurements[1].completed_agents, 1);
+        assert!(!measurements[1].measurement_complete);
+
+        // The limit caps the number of returned measurements.
+        let limited = db.list_user_measurements(user_hash, 1).await.unwrap();
+        assert_eq!(limited.len(), 1);
+        assert_eq!(limited[0].measurement_id, m2);
     }
 
     #[tokio::test]

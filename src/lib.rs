@@ -7,7 +7,7 @@ pub mod probe_capnp;
 
 use axum::{
     Router,
-    extract::{Extension, Path, Request, State},
+    extract::{Extension, Path, Query, Request, State},
     http::StatusCode,
     middleware::Next,
     response::Json,
@@ -46,6 +46,7 @@ pub fn create_client_app(state: AppState) -> Router {
     let protected_routes = Router::new()
         .route("/user/me", get(get_user_info))
         .route("/user/prefixes", get(get_user_prefixes))
+        .route("/user/measurements", get(list_measurements_handler))
         .route("/probes", post(submit_probes))
         .route(
             "/measurement/{id}/status",
@@ -625,6 +626,57 @@ async fn submit_probes(
         probes: total_probe_count,
         agents: assigned_agents,
     }))
+}
+
+// Query parameters for listing a user's measurements
+#[derive(serde::Deserialize)]
+struct ListMeasurementsQuery {
+    limit: Option<i32>,
+}
+
+// Handler for listing the authenticated user's recent measurements (client-facing)
+async fn list_measurements_handler(
+    Extension(auth_info): Extension<jwt::AuthInfo>,
+    State(state): State<AppState>,
+    Query(params): Query<ListMeasurementsQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let user_hash = crate::hash_user_identifier(&auth_info.sub);
+    let limit = params.limit.unwrap_or(20).clamp(1, 100);
+
+    match state
+        .database
+        .list_user_measurements(&user_hash, limit)
+        .await
+    {
+        Ok(measurements) => {
+            let items: Vec<_> = measurements
+                .into_iter()
+                .map(|m| {
+                    serde_json::json!({
+                        "measurement_id": m.measurement_id,
+                        "total_agents": m.total_agents,
+                        "completed_agents": m.completed_agents,
+                        "total_expected_probes": m.total_expected_probes,
+                        "total_sent_probes": m.total_sent_probes,
+                        "measurement_complete": m.measurement_complete,
+                        "started_at": m.started_at,
+                        "last_updated": m.last_updated
+                    })
+                })
+                .collect();
+            Ok(Json(serde_json::Value::Array(items)))
+        }
+        Err(err) => {
+            error!("Failed to list measurements: {}", err);
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": 500,
+                    "message": "Failed to retrieve measurements"
+                })),
+            ))
+        }
+    }
 }
 
 // Handler for getting measurement status (client-facing)

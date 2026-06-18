@@ -52,8 +52,9 @@ The gateway is configured via **command-line arguments** (not environment variab
 
 - `GET /api/user/me` - Get user probe daily usage statistics
 - `GET /api/user/prefixes` - List user prefixes per agent
+- `GET /api/user/measurements` - List the user's recent measurements (optional `?limit=`, default 20, max 100)
 - `POST /api/probes` - Submit probes for measurement
-- `GET /api/measurements/{id}/status` - Get measurement status
+- `GET /api/measurement/{id}/status` - Get measurement status
 
 ### Agent API (requires agent key)
 
