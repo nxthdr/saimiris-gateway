@@ -46,7 +46,7 @@ pub fn create_client_app(state: AppState) -> Router {
     let protected_routes = Router::new()
         .route("/user/me", get(get_user_info))
         .route("/user/prefixes", get(get_user_prefixes))
-        .route("/user/measurements", get(list_measurements_handler))
+        .route("/measurements", get(list_measurements_handler))
         .route("/probes", post(submit_probes))
         .route(
             "/measurement/{id}/status",
