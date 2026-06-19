@@ -838,12 +838,21 @@ async fn cancel_measurement_handler(
         }
     };
 
+    // Already terminal (every agent complete or cancelled) — nothing to cancel.
+    // `cancelled` here means "did this call cancel it" (it didn't); the actual
+    // state is reported via `measurement_cancelled`.
     if status.measurement_complete {
+        let message = if status.measurement_cancelled {
+            "Measurement already cancelled"
+        } else {
+            "Measurement already complete; nothing to cancel"
+        };
         return Ok(Json(serde_json::json!({
             "measurement_id": measurement_uuid,
             "cancelled": false,
+            "measurement_cancelled": status.measurement_cancelled,
             "agents_cancelled": 0,
-            "message": "Measurement already complete; nothing to cancel"
+            "message": message
         })));
     }
 
@@ -852,9 +861,19 @@ async fn cancel_measurement_handler(
         .cancel_measurement(measurement_uuid, &user_hash)
         .await
     {
+        // 0 rows means the measurement became terminal between our status read and
+        // the UPDATE (an agent finished, or a concurrent cancel won) — this call
+        // did not cancel anything, so don't claim it did.
+        Ok(0) => Ok(Json(serde_json::json!({
+            "measurement_id": measurement_uuid,
+            "cancelled": false,
+            "agents_cancelled": 0,
+            "message": "Measurement already terminal; nothing to cancel"
+        }))),
         Ok(agents_cancelled) => Ok(Json(serde_json::json!({
             "measurement_id": measurement_uuid,
             "cancelled": true,
+            "measurement_cancelled": true,
             "agents_cancelled": agents_cancelled,
             "message": "Measurement cancelled"
         }))),
