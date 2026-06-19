@@ -8,7 +8,10 @@ ALTER TABLE measurement_tracking
 
 -- Recreate the status view: a measurement is terminal ("complete") when every
 -- agent is either complete or cancelled, and expose whether it was cancelled.
-CREATE OR REPLACE VIEW measurement_status AS
+-- DROP + CREATE (not CREATE OR REPLACE): Postgres forbids reordering/renaming an
+-- existing view's columns via CREATE OR REPLACE, and we add a column mid-list.
+DROP VIEW IF EXISTS measurement_status;
+CREATE VIEW measurement_status AS
 SELECT
     measurement_id,
     user_hash,
