@@ -52,6 +52,10 @@ pub fn create_client_app(state: AppState) -> Router {
             "/measurement/{id}/status",
             get(get_measurement_status_handler),
         )
+        .route(
+            "/measurement/{id}/cancel",
+            post(cancel_measurement_handler),
+        )
         // .route("/admin/user-limit", post(set_user_limit))
         // .route("/admin/user-limit/:user_id", get(get_user_limit))
         .layer(axum::middleware::from_fn_with_state(
@@ -676,6 +680,7 @@ async fn list_measurements_handler(
                         "total_expected_probes": m.total_expected_probes,
                         "total_sent_probes": m.total_sent_probes,
                         "measurement_complete": m.measurement_complete,
+                        "measurement_cancelled": m.measurement_cancelled,
                         "started_at": m.started_at,
                         "last_updated": m.last_updated
                     })
@@ -744,6 +749,7 @@ async fn get_measurement_status_handler(
                         "expected_probes": t.expected_probes,
                         "sent_probes": t.sent_probes,
                         "is_complete": t.is_complete,
+                        "cancelled": t.cancelled,
                         "updated_at": t.updated_at
                     })
                 })
@@ -756,6 +762,7 @@ async fn get_measurement_status_handler(
                 "total_expected_probes": status.total_expected_probes,
                 "total_sent_probes": status.total_sent_probes,
                 "measurement_complete": status.measurement_complete,
+                "measurement_cancelled": status.measurement_cancelled,
                 "started_at": status.started_at,
                 "last_updated": status.last_updated,
                 "agents": agents_detail
@@ -775,6 +782,89 @@ async fn get_measurement_status_handler(
                 Json(serde_json::json!({
                     "error": 500,
                     "message": "Failed to retrieve measurement status"
+                })),
+            ))
+        }
+    }
+}
+
+// Handler for cancelling a user's stuck/in-progress measurement (client-facing)
+async fn cancel_measurement_handler(
+    Extension(auth_info): Extension<jwt::AuthInfo>,
+    State(state): State<AppState>,
+    Path(measurement_id): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let measurement_uuid = match Uuid::parse_str(&measurement_id) {
+        Ok(uuid) => uuid,
+        Err(_) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": 400,
+                    "message": "Invalid measurement ID format"
+                })),
+            ));
+        }
+    };
+
+    let user_hash = crate::hash_user_identifier(&auth_info.sub);
+
+    // Look the measurement up first so we can 404 if it isn't this user's, and
+    // no-op if it's already terminal.
+    let status = match state
+        .database
+        .get_measurement_status(measurement_uuid, &user_hash)
+        .await
+    {
+        Ok(Some(status)) => status,
+        Ok(None) => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({
+                    "error": 404,
+                    "message": "Measurement not found"
+                })),
+            ));
+        }
+        Err(err) => {
+            error!("Failed to look up measurement before cancel: {}", err);
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": 500,
+                    "message": "Failed to cancel measurement"
+                })),
+            ));
+        }
+    };
+
+    if status.measurement_complete {
+        return Ok(Json(serde_json::json!({
+            "measurement_id": measurement_uuid,
+            "cancelled": false,
+            "agents_cancelled": 0,
+            "message": "Measurement already complete; nothing to cancel"
+        })));
+    }
+
+    match state
+        .database
+        .cancel_measurement(measurement_uuid, &user_hash)
+        .await
+    {
+        Ok(agents_cancelled) => Ok(Json(serde_json::json!({
+            "measurement_id": measurement_uuid,
+            "cancelled": true,
+            "agents_cancelled": agents_cancelled,
+            "message": "Measurement cancelled"
+        }))),
+        Err(err) => {
+            error!("Failed to cancel measurement: {}", err);
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": 500,
+                    "message": "Failed to cancel measurement"
                 })),
             ))
         }
