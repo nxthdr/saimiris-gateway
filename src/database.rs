@@ -52,6 +52,7 @@ pub struct MeasurementTracking {
     pub expected_probes: i32,
     pub sent_probes: i32,
     pub is_complete: bool,
+    pub cancelled: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -65,6 +66,7 @@ pub struct MeasurementStatus {
     pub total_sent_probes: i64,
     pub completed_agents: i64,
     pub measurement_complete: bool,
+    pub measurement_cancelled: bool,
     pub started_at: DateTime<Utc>,
     pub last_updated: DateTime<Utc>,
 }
@@ -592,7 +594,7 @@ impl Database {
                     r#"INSERT INTO measurement_tracking
                        (user_hash, measurement_id, agent_id, expected_probes, sent_probes, is_complete, created_at, updated_at)
                        VALUES ($1, $2, $3, $4, 0, false, $5, $5)
-                       RETURNING id, user_hash, measurement_id, agent_id, expected_probes, sent_probes, is_complete, created_at, updated_at"#
+                       RETURNING id, user_hash, measurement_id, agent_id, expected_probes, sent_probes, is_complete, cancelled, created_at, updated_at"#
                 )
                 .bind(user_hash)
                 .bind(measurement_id)
@@ -613,6 +615,7 @@ impl Database {
                     expected_probes,
                     sent_probes: 0,
                     is_complete: false,
+                    cancelled: false,
                     created_at: now,
                     updated_at: now,
                 };
@@ -641,7 +644,7 @@ impl Database {
                     r#"UPDATE measurement_tracking
                        SET sent_probes = $4, is_complete = $5, updated_at = $6
                        WHERE measurement_id = $1 AND user_hash = $2 AND agent_id = $3
-                       RETURNING id, user_hash, measurement_id, agent_id, expected_probes, sent_probes, is_complete, created_at, updated_at"#
+                       RETURNING id, user_hash, measurement_id, agent_id, expected_probes, sent_probes, is_complete, cancelled, created_at, updated_at"#
                 )
                 .bind(measurement_id)
                 .bind(user_hash)
@@ -690,6 +693,7 @@ impl Database {
                        total_sent_probes,
                        completed_agents,
                        measurement_complete,
+                       measurement_cancelled,
                        started_at,
                        last_updated
                        FROM measurement_status
@@ -718,7 +722,11 @@ impl Database {
                     records.iter().map(|r| r.expected_probes as i64).sum();
                 let total_sent_probes: i64 = records.iter().map(|r| r.sent_probes as i64).sum();
                 let completed_agents = records.iter().filter(|r| r.is_complete).count() as i64;
-                let measurement_complete = completed_agents == total_agents;
+                // Terminal when every agent is complete or cancelled (mirrors the view).
+                let terminal_agents =
+                    records.iter().filter(|r| r.is_complete || r.cancelled).count() as i64;
+                let measurement_complete = terminal_agents == total_agents;
+                let measurement_cancelled = records.iter().any(|r| r.cancelled);
                 let started_at = records.iter().map(|r| r.created_at).min().unwrap();
                 let last_updated = records.iter().map(|r| r.updated_at).max().unwrap();
 
@@ -730,6 +738,7 @@ impl Database {
                     total_sent_probes,
                     completed_agents,
                     measurement_complete,
+                    measurement_cancelled,
                     started_at,
                     last_updated,
                 }))
@@ -754,6 +763,7 @@ impl Database {
                        total_sent_probes,
                        completed_agents,
                        measurement_complete,
+                       measurement_cancelled,
                        started_at,
                        last_updated
                        FROM measurement_status
@@ -785,6 +795,8 @@ impl Database {
                         let total_agents = records.len() as i64;
                         let completed_agents =
                             records.iter().filter(|r| r.is_complete).count() as i64;
+                        let terminal_agents =
+                            records.iter().filter(|r| r.is_complete || r.cancelled).count() as i64;
                         MeasurementStatus {
                             measurement_id,
                             user_hash: user_hash.to_string(),
@@ -795,7 +807,8 @@ impl Database {
                                 .sum(),
                             total_sent_probes: records.iter().map(|r| r.sent_probes as i64).sum(),
                             completed_agents,
-                            measurement_complete: completed_agents == total_agents,
+                            measurement_complete: terminal_agents == total_agents,
+                            measurement_cancelled: records.iter().any(|r| r.cancelled),
                             started_at: records.iter().map(|r| r.created_at).min().unwrap(),
                             last_updated: records.iter().map(|r| r.updated_at).max().unwrap(),
                         }
@@ -809,6 +822,48 @@ impl Database {
         }
     }
 
+    /// Cancel a user's measurement by marking its not-yet-complete agent rows
+    /// as cancelled. Returns the number of rows changed (0 if the measurement is
+    /// already terminal — every agent already complete or cancelled).
+    pub async fn cancel_measurement(
+        &self,
+        measurement_id: Uuid,
+        user_hash: &str,
+    ) -> Result<u64, sqlx::Error> {
+        let now = Utc::now();
+        match &self.impl_ {
+            DatabaseImpl::Real(pool) => {
+                let result = sqlx::query(
+                    r#"UPDATE measurement_tracking
+                       SET cancelled = TRUE, updated_at = $3
+                       WHERE measurement_id = $1 AND user_hash = $2
+                         AND is_complete = FALSE AND cancelled = FALSE"#,
+                )
+                .bind(measurement_id)
+                .bind(user_hash)
+                .bind(now)
+                .execute(pool)
+                .await?;
+                Ok(result.rows_affected())
+            }
+            DatabaseImpl::Mock(storage) => {
+                let mut tracking = storage.measurement_tracking.lock().unwrap();
+                let mut affected = 0u64;
+                for record in tracking.iter_mut().filter(|t| {
+                    t.measurement_id == measurement_id
+                        && t.user_hash == user_hash
+                        && !t.is_complete
+                        && !t.cancelled
+                }) {
+                    record.cancelled = true;
+                    record.updated_at = now;
+                    affected += 1;
+                }
+                Ok(affected)
+            }
+        }
+    }
+
     /// Get all measurement tracking entries for a measurement
     pub async fn get_measurement_tracking(
         &self,
@@ -818,7 +873,7 @@ impl Database {
         match &self.impl_ {
             DatabaseImpl::Real(pool) => {
                 let records = sqlx::query_as::<_, MeasurementTracking>(
-                    r#"SELECT id, user_hash, measurement_id, agent_id, expected_probes, sent_probes, is_complete, created_at, updated_at
+                    r#"SELECT id, user_hash, measurement_id, agent_id, expected_probes, sent_probes, is_complete, cancelled, created_at, updated_at
                        FROM measurement_tracking
                        WHERE measurement_id = $1 AND user_hash = $2
                        ORDER BY created_at"#
@@ -853,7 +908,7 @@ impl Database {
         match &self.impl_ {
             DatabaseImpl::Real(pool) => {
                 let record = sqlx::query_as::<_, MeasurementTracking>(
-                    r#"SELECT id, user_hash, measurement_id, agent_id, expected_probes, sent_probes, is_complete, created_at, updated_at
+                    r#"SELECT id, user_hash, measurement_id, agent_id, expected_probes, sent_probes, is_complete, cancelled, created_at, updated_at
                        FROM measurement_tracking
                        WHERE measurement_id = $1 AND agent_id = $2"#
                 )
@@ -1278,6 +1333,48 @@ mod tests {
         let limited = db.list_user_measurements(user_hash, 1).await.unwrap();
         assert_eq!(limited.len(), 1);
         assert_eq!(limited[0].measurement_id, m2);
+    }
+
+    #[tokio::test]
+    async fn test_cancel_measurement() {
+        let db = Database::new_mock();
+        db.initialize().await.unwrap();
+        let user_hash = "test_user_hash";
+
+        // A stuck measurement: one agent that never completed.
+        let m = Uuid::new_v4();
+        db.create_measurement_tracking(user_hash, m, "agent1", 3000)
+            .await
+            .unwrap();
+
+        let before = db.get_measurement_status(m, user_hash).await.unwrap().unwrap();
+        assert!(!before.measurement_complete);
+        assert!(!before.measurement_cancelled);
+
+        // Cancel marks the unfinished agent row -> 1 row changed.
+        assert_eq!(db.cancel_measurement(m, user_hash).await.unwrap(), 1);
+
+        let after = db.get_measurement_status(m, user_hash).await.unwrap().unwrap();
+        assert!(after.measurement_complete); // terminal now
+        assert!(after.measurement_cancelled);
+        assert_eq!(after.completed_agents, 0); // cancelled is not "completed"
+
+        // Idempotent: a second cancel changes nothing.
+        assert_eq!(db.cancel_measurement(m, user_hash).await.unwrap(), 0);
+
+        // A different user cannot cancel someone else's measurement.
+        let other = Uuid::new_v4();
+        db.create_measurement_tracking(user_hash, other, "agent1", 10)
+            .await
+            .unwrap();
+        assert_eq!(db.cancel_measurement(other, "other_user").await.unwrap(), 0);
+        assert!(
+            !db.get_measurement_status(other, user_hash)
+                .await
+                .unwrap()
+                .unwrap()
+                .measurement_complete
+        );
     }
 
     #[tokio::test]

@@ -55,6 +55,7 @@ The gateway is configured via **command-line arguments** (not environment variab
 - `POST /api/probes` - Submit probes for measurement
 - `GET /api/measurements` - List the user's recent measurements (optional `?limit=`, default 20, max 100)
 - `GET /api/measurement/{id}/status` - Get measurement status
+- `POST /api/measurement/{id}/cancel` - Cancel a stuck/in-progress measurement (marks its unfinished agents cancelled)
 
 ### Agent API (requires agent key)
 
