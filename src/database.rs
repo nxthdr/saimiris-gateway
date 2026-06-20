@@ -71,6 +71,57 @@ pub struct MeasurementStatus {
     pub last_updated: DateTime<Utc>,
 }
 
+/// A measurement's progress/terminal state, used for filtering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MeasurementState {
+    Complete,
+    InProgress,
+    Cancelled,
+}
+
+/// Which timestamp to order the measurement list by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MeasurementSort {
+    Started,
+    Updated,
+}
+
+/// Filters for `list_user_measurements`. An empty `status` means "any state".
+#[derive(Debug, Clone)]
+pub struct MeasurementListFilter {
+    pub status: Vec<MeasurementState>,
+    pub since: Option<DateTime<Utc>>,
+    pub until: Option<DateTime<Utc>>,
+    pub agent: Option<String>,
+    pub sort: MeasurementSort,
+    pub reverse: bool,
+    pub limit: i32,
+}
+
+impl MeasurementListFilter {
+    /// No filters, newest-first by last update, with the given limit.
+    pub fn with_limit(limit: i32) -> Self {
+        Self {
+            status: Vec::new(),
+            since: None,
+            until: None,
+            agent: None,
+            sort: MeasurementSort::Updated,
+            reverse: false,
+            limit,
+        }
+    }
+}
+
+/// Does a measurement match one of the requested states?
+fn measurement_in_state(m: &MeasurementStatus, state: MeasurementState) -> bool {
+    match state {
+        MeasurementState::Complete => m.measurement_complete && !m.measurement_cancelled,
+        MeasurementState::InProgress => !m.measurement_complete,
+        MeasurementState::Cancelled => m.measurement_cancelled,
+    }
+}
+
 // Mock storage for testing
 #[derive(Debug, Clone)]
 pub(crate) struct MockStorage {
@@ -746,36 +797,76 @@ impl Database {
         }
     }
 
-    /// List a user's most recent measurements, newest first.
+    /// List a user's measurements, applying the given filters (status, started-at
+    /// window, agent) and ordering. Filters are applied before the limit.
     pub async fn list_user_measurements(
         &self,
         user_hash: &str,
-        limit: i32,
+        filter: &MeasurementListFilter,
     ) -> Result<Vec<MeasurementStatus>, sqlx::Error> {
         match &self.impl_ {
             DatabaseImpl::Real(pool) => {
-                let measurements = sqlx::query_as::<_, MeasurementStatus>(
-                    r#"SELECT
-                       measurement_id,
-                       user_hash,
-                       total_agents,
-                       total_expected_probes,
-                       total_sent_probes,
-                       completed_agents,
-                       measurement_complete,
-                       measurement_cancelled,
-                       started_at,
-                       last_updated
-                       FROM measurement_status
-                       WHERE user_hash = $1
-                       ORDER BY last_updated DESC
-                       LIMIT $2"#,
-                )
-                .bind(user_hash)
-                .bind(limit)
-                .fetch_all(pool)
-                .await?;
+                let mut qb = sqlx::QueryBuilder::new(
+                    "SELECT measurement_id, user_hash, total_agents, total_expected_probes, \
+                     total_sent_probes, completed_agents, measurement_complete, \
+                     measurement_cancelled, started_at, last_updated \
+                     FROM measurement_status WHERE user_hash = ",
+                );
+                qb.push_bind(user_hash);
 
+                // status: OR of the requested states (constant predicates, no binds)
+                if !filter.status.is_empty() {
+                    qb.push(" AND (");
+                    {
+                        let mut sep = qb.separated(" OR ");
+                        for state in &filter.status {
+                            match state {
+                                MeasurementState::Complete => {
+                                    sep.push("(measurement_complete AND NOT measurement_cancelled)");
+                                }
+                                MeasurementState::InProgress => {
+                                    sep.push("(NOT measurement_complete)");
+                                }
+                                MeasurementState::Cancelled => {
+                                    sep.push("measurement_cancelled");
+                                }
+                            };
+                        }
+                    }
+                    qb.push(")");
+                }
+
+                if let Some(since) = filter.since {
+                    qb.push(" AND started_at >= ").push_bind(since);
+                }
+                if let Some(until) = filter.until {
+                    qb.push(" AND started_at <= ").push_bind(until);
+                }
+                if let Some(agent) = &filter.agent {
+                    qb.push(
+                        " AND EXISTS (SELECT 1 FROM measurement_tracking t \
+                         WHERE t.measurement_id = measurement_status.measurement_id \
+                         AND t.user_hash = ",
+                    )
+                    .push_bind(user_hash)
+                    .push(" AND t.agent_id = ")
+                    .push_bind(agent)
+                    .push(")");
+                }
+
+                // sort column is a fixed identifier from an enum, never raw input
+                let sort_col = match filter.sort {
+                    MeasurementSort::Started => "started_at",
+                    MeasurementSort::Updated => "last_updated",
+                };
+                qb.push(" ORDER BY ").push(sort_col);
+                qb.push(if filter.reverse { " ASC" } else { " DESC" });
+                qb.push(" LIMIT ").push_bind(filter.limit);
+
+                let measurements = qb
+                    .build_query_as::<MeasurementStatus>()
+                    .fetch_all(pool)
+                    .await?;
                 Ok(measurements)
             }
             DatabaseImpl::Mock(storage) => {
@@ -791,6 +882,11 @@ impl Database {
 
                 let mut measurements: Vec<MeasurementStatus> = by_measurement
                     .into_iter()
+                    // agent filter: keep only measurements that involve the agent
+                    .filter(|(_, records)| match &filter.agent {
+                        Some(a) => records.iter().any(|r| &r.agent_id == a),
+                        None => true,
+                    })
                     .map(|(measurement_id, records)| {
                         let total_agents = records.len() as i64;
                         let completed_agents =
@@ -815,8 +911,27 @@ impl Database {
                     })
                     .collect();
 
-                measurements.sort_by(|a, b| b.last_updated.cmp(&a.last_updated));
-                measurements.truncate(limit as usize);
+                // status filter (OR of requested states)
+                if !filter.status.is_empty() {
+                    measurements
+                        .retain(|m| filter.status.iter().any(|s| measurement_in_state(m, *s)));
+                }
+                // started-at window
+                if let Some(since) = filter.since {
+                    measurements.retain(|m| m.started_at >= since);
+                }
+                if let Some(until) = filter.until {
+                    measurements.retain(|m| m.started_at <= until);
+                }
+
+                measurements.sort_by(|a, b| {
+                    let ord = match filter.sort {
+                        MeasurementSort::Started => a.started_at.cmp(&b.started_at),
+                        MeasurementSort::Updated => a.last_updated.cmp(&b.last_updated),
+                    };
+                    if filter.reverse { ord } else { ord.reverse() }
+                });
+                measurements.truncate(filter.limit as usize);
                 Ok(measurements)
             }
         }
@@ -1318,7 +1433,10 @@ mod tests {
             .await
             .unwrap();
 
-        let measurements = db.list_user_measurements(user_hash, 20).await.unwrap();
+        let measurements = db
+            .list_user_measurements(user_hash, &MeasurementListFilter::with_limit(20))
+            .await
+            .unwrap();
 
         // Only this user's two measurements, newest (m2) first.
         assert_eq!(measurements.len(), 2);
@@ -1330,9 +1448,164 @@ mod tests {
         assert!(!measurements[1].measurement_complete);
 
         // The limit caps the number of returned measurements.
-        let limited = db.list_user_measurements(user_hash, 1).await.unwrap();
+        let limited = db
+            .list_user_measurements(user_hash, &MeasurementListFilter::with_limit(1))
+            .await
+            .unwrap();
         assert_eq!(limited.len(), 1);
         assert_eq!(limited[0].measurement_id, m2);
+    }
+
+    #[tokio::test]
+    async fn test_list_user_measurements_filters() {
+        use std::collections::HashSet;
+        let db = Database::new_mock();
+        db.initialize().await.unwrap();
+        let user = "u";
+
+        // complete, on agentA (created/updated first)
+        let m_complete = Uuid::new_v4();
+        db.create_measurement_tracking(user, m_complete, "agentA", 10)
+            .await
+            .unwrap();
+        db.update_measurement_probe_count(m_complete, user, "agentA", 10, true)
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+
+        // in-progress, on agentB
+        let m_inprogress = Uuid::new_v4();
+        db.create_measurement_tracking(user, m_inprogress, "agentB", 10)
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+
+        // cancelled, on agentB (touched last)
+        let m_cancelled = Uuid::new_v4();
+        db.create_measurement_tracking(user, m_cancelled, "agentB", 10)
+            .await
+            .unwrap();
+        db.cancel_measurement(m_cancelled, user).await.unwrap();
+
+        let base = MeasurementListFilter::with_limit(100);
+        let ids = |ms: Vec<MeasurementStatus>| -> HashSet<Uuid> {
+            ms.into_iter().map(|m| m.measurement_id).collect()
+        };
+        let with_status = |status: Vec<MeasurementState>| MeasurementListFilter {
+            status,
+            ..base.clone()
+        };
+
+        // single-state filters
+        let r = db
+            .list_user_measurements(user, &with_status(vec![MeasurementState::Complete]))
+            .await
+            .unwrap();
+        assert_eq!(ids(r), HashSet::from([m_complete]));
+        let r = db
+            .list_user_measurements(user, &with_status(vec![MeasurementState::InProgress]))
+            .await
+            .unwrap();
+        assert_eq!(ids(r), HashSet::from([m_inprogress]));
+        let r = db
+            .list_user_measurements(user, &with_status(vec![MeasurementState::Cancelled]))
+            .await
+            .unwrap();
+        assert_eq!(ids(r), HashSet::from([m_cancelled]));
+
+        // OR of multiple states
+        let r = db
+            .list_user_measurements(
+                user,
+                &with_status(vec![MeasurementState::Complete, MeasurementState::Cancelled]),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ids(r), HashSet::from([m_complete, m_cancelled]));
+
+        // agent filter
+        let r = db
+            .list_user_measurements(
+                user,
+                &MeasurementListFilter {
+                    agent: Some("agentA".to_string()),
+                    ..base.clone()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(ids(r), HashSet::from([m_complete]));
+
+        // default order = newest last_updated first (m_cancelled touched last)
+        let r = db.list_user_measurements(user, &base).await.unwrap();
+        assert_eq!(r.first().unwrap().measurement_id, m_cancelled);
+
+        // sort by started ascending -> earliest started first (m_complete)
+        let by_started = db
+            .list_user_measurements(
+                user,
+                &MeasurementListFilter {
+                    sort: MeasurementSort::Started,
+                    reverse: true,
+                    ..base.clone()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(by_started[0].measurement_id, m_complete);
+
+        // started-at window (timestamps taken from the started-ascending order:
+        // [0] m_complete, [1] m_inprogress, [2] m_cancelled)
+        let t_inprogress = by_started[1].started_at;
+        let t_cancelled = by_started[2].started_at;
+
+        // since excludes anything started earlier
+        let r = db
+            .list_user_measurements(
+                user,
+                &MeasurementListFilter { since: Some(t_inprogress), ..base.clone() },
+            )
+            .await
+            .unwrap();
+        assert_eq!(ids(r), HashSet::from([m_inprogress, m_cancelled]));
+
+        // until excludes anything started later
+        let r = db
+            .list_user_measurements(
+                user,
+                &MeasurementListFilter { until: Some(t_inprogress), ..base.clone() },
+            )
+            .await
+            .unwrap();
+        assert_eq!(ids(r), HashSet::from([m_complete, m_inprogress]));
+
+        // inclusive boundary: since == until matches exactly that instant
+        let r = db
+            .list_user_measurements(
+                user,
+                &MeasurementListFilter {
+                    since: Some(t_inprogress),
+                    until: Some(t_inprogress),
+                    ..base.clone()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(ids(r), HashSet::from([m_inprogress]));
+
+        // since > until yields nothing
+        let r = db
+            .list_user_measurements(
+                user,
+                &MeasurementListFilter {
+                    since: Some(t_cancelled),
+                    until: Some(t_inprogress),
+                    ..base.clone()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(r.is_empty());
     }
 
     #[tokio::test]

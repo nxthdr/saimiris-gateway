@@ -24,7 +24,7 @@ use tower_http::trace::TraceLayer;
 use tracing::{debug, error, warn};
 
 use agent::{Agent, AgentConfig, AgentStore, HealthStatus};
-use database::Database;
+use database::{Database, MeasurementListFilter, MeasurementSort, MeasurementState};
 use probe::{SubmitProbesRequest, SubmitProbesResponse};
 use uuid::Uuid;
 
@@ -639,6 +639,35 @@ async fn submit_probes(
 #[derive(serde::Deserialize)]
 struct ListMeasurementsQuery {
     limit: Option<String>,
+    status: Option<String>,
+    since: Option<String>,
+    until: Option<String>,
+    agent: Option<String>,
+    sort: Option<String>,
+    reverse: Option<String>,
+}
+
+// A 400 response in the codebase's standard {error, message} JSON shape.
+fn bad_request(message: impl Into<String>) -> (StatusCode, Json<serde_json::Value>) {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({ "error": 400, "message": message.into() })),
+    )
+}
+
+// Parse a user-supplied time: RFC3339, "YYYY-MM-DD HH:MM:SS", or "YYYY-MM-DD" (UTC).
+fn parse_time(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeZone, Utc};
+    if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
+        return Some(dt.with_timezone(&Utc));
+    }
+    if let Ok(ndt) = NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
+        return Some(Utc.from_utc_datetime(&ndt));
+    }
+    if let Ok(d) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+        return Some(Utc.from_utc_datetime(&d.and_hms_opt(0, 0, 0).unwrap()));
+    }
+    None
 }
 
 // Handler for listing the authenticated user's recent measurements (client-facing)
@@ -648,25 +677,86 @@ async fn list_measurements_handler(
     Query(params): Query<ListMeasurementsQuery>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let user_hash = crate::hash_user_identifier(&auth_info.sub);
+
     let limit = match params.limit.as_deref() {
         None | Some("") => 20,
         Some(raw) => match raw.parse::<i64>() {
             Ok(n) => n.clamp(1, 100) as i32,
             Err(_) => {
-                return Err((
-                    StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({
-                        "error": 400,
-                        "message": "Invalid 'limit' query parameter: expected an integer between 1 and 100"
-                    })),
+                return Err(bad_request(
+                    "Invalid 'limit' query parameter: expected an integer between 1 and 100",
                 ));
             }
         },
     };
 
+    // status: comma-separated complete|in-progress|cancelled
+    let mut status = Vec::new();
+    if let Some(raw) = params.status.as_deref() {
+        for part in raw.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            let state = match part {
+                "complete" => MeasurementState::Complete,
+                "in-progress" => MeasurementState::InProgress,
+                "cancelled" => MeasurementState::Cancelled,
+                other => {
+                    return Err(bad_request(format!(
+                        "Invalid 'status' '{other}': expected complete|in-progress|cancelled"
+                    )));
+                }
+            };
+            status.push(state);
+        }
+    }
+
+    let parse_window = |label: &str, v: &Option<String>| match v.as_deref().filter(|s| !s.is_empty())
+    {
+        Some(s) => parse_time(s)
+            .map(Some)
+            .ok_or_else(|| bad_request(format!("Invalid '{label}' time: {s}"))),
+        None => Ok(None),
+    };
+    let since = parse_window("since", &params.since)?;
+    let until = parse_window("until", &params.until)?;
+
+    let agent = params
+        .agent
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+
+    let sort = match params.sort.as_deref() {
+        None | Some("") | Some("updated") => MeasurementSort::Updated,
+        Some("started") => MeasurementSort::Started,
+        Some(other) => {
+            return Err(bad_request(format!(
+                "Invalid 'sort' '{other}': expected started|updated"
+            )));
+        }
+    };
+
+    let reverse = match params.reverse.as_deref() {
+        None | Some("") | Some("false") | Some("0") => false,
+        Some("true") | Some("1") => true,
+        Some(other) => {
+            return Err(bad_request(format!(
+                "Invalid 'reverse' '{other}': expected true|false"
+            )));
+        }
+    };
+
+    let filter = MeasurementListFilter {
+        status,
+        since,
+        until,
+        agent,
+        sort,
+        reverse,
+        limit,
+    };
+
     match state
         .database
-        .list_user_measurements(&user_hash, limit)
+        .list_user_measurements(&user_hash, &filter)
         .await
     {
         Ok(measurements) => {
@@ -1255,3 +1345,17 @@ pub fn calculate_user_prefix(agent_prefix: &str, user_id: u32) -> Option<String>
 //         }
 //     }
 // }
+
+#[cfg(test)]
+mod tests {
+    use super::parse_time;
+
+    #[test]
+    fn parse_time_accepts_supported_formats() {
+        assert!(parse_time("2026-03-22").is_some()); // date only
+        assert!(parse_time("2026-03-22 10:30:00").is_some()); // datetime
+        assert!(parse_time("2026-03-22T10:30:00Z").is_some()); // RFC3339
+        assert!(parse_time("nonsense").is_none());
+        assert!(parse_time("2026-13-01").is_none()); // invalid month
+    }
+}
