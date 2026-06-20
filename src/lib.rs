@@ -696,8 +696,8 @@ async fn list_measurements_handler(
         for part in raw.split(',').map(str::trim).filter(|s| !s.is_empty()) {
             let state = match part {
                 "complete" => MeasurementState::Complete,
-                "in-progress" | "in_progress" => MeasurementState::InProgress,
-                "cancelled" | "canceled" => MeasurementState::Cancelled,
+                "in-progress" => MeasurementState::InProgress,
+                "cancelled" => MeasurementState::Cancelled,
                 other => {
                     return Err(bad_request(format!(
                         "Invalid 'status' '{other}': expected complete|in-progress|cancelled"
@@ -1345,3 +1345,17 @@ pub fn calculate_user_prefix(agent_prefix: &str, user_id: u32) -> Option<String>
 //         }
 //     }
 // }
+
+#[cfg(test)]
+mod tests {
+    use super::parse_time;
+
+    #[test]
+    fn parse_time_accepts_supported_formats() {
+        assert!(parse_time("2026-03-22").is_some()); // date only
+        assert!(parse_time("2026-03-22 10:30:00").is_some()); // datetime
+        assert!(parse_time("2026-03-22T10:30:00Z").is_some()); // RFC3339
+        assert!(parse_time("nonsense").is_none());
+        assert!(parse_time("2026-13-01").is_none()); // invalid month
+    }
+}

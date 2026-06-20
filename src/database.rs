@@ -1541,7 +1541,7 @@ mod tests {
         assert_eq!(r.first().unwrap().measurement_id, m_cancelled);
 
         // sort by started ascending -> earliest started first (m_complete)
-        let r = db
+        let by_started = db
             .list_user_measurements(
                 user,
                 &MeasurementListFilter {
@@ -1552,7 +1552,60 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(r.first().unwrap().measurement_id, m_complete);
+        assert_eq!(by_started[0].measurement_id, m_complete);
+
+        // started-at window (timestamps taken from the started-ascending order:
+        // [0] m_complete, [1] m_inprogress, [2] m_cancelled)
+        let t_inprogress = by_started[1].started_at;
+        let t_cancelled = by_started[2].started_at;
+
+        // since excludes anything started earlier
+        let r = db
+            .list_user_measurements(
+                user,
+                &MeasurementListFilter { since: Some(t_inprogress), ..base.clone() },
+            )
+            .await
+            .unwrap();
+        assert_eq!(ids(r), HashSet::from([m_inprogress, m_cancelled]));
+
+        // until excludes anything started later
+        let r = db
+            .list_user_measurements(
+                user,
+                &MeasurementListFilter { until: Some(t_inprogress), ..base.clone() },
+            )
+            .await
+            .unwrap();
+        assert_eq!(ids(r), HashSet::from([m_complete, m_inprogress]));
+
+        // inclusive boundary: since == until matches exactly that instant
+        let r = db
+            .list_user_measurements(
+                user,
+                &MeasurementListFilter {
+                    since: Some(t_inprogress),
+                    until: Some(t_inprogress),
+                    ..base.clone()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(ids(r), HashSet::from([m_inprogress]));
+
+        // since > until yields nothing
+        let r = db
+            .list_user_measurements(
+                user,
+                &MeasurementListFilter {
+                    since: Some(t_cancelled),
+                    until: Some(t_inprogress),
+                    ..base.clone()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(r.is_empty());
     }
 
     #[tokio::test]
