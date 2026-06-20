@@ -53,7 +53,7 @@ The gateway is configured via **command-line arguments** (not environment variab
 - `GET /api/user/me` - Get user probe daily usage statistics
 - `GET /api/user/prefixes` - List user prefixes per agent
 - `POST /api/probes` - Submit probes for measurement
-- `GET /api/measurements` - List the user's recent measurements (optional `?limit=`, default 20, max 100)
+- `GET /api/measurements` - List the user's measurements. Query params (all optional, applied before the limit): `limit` (1–100, default 20), `status` (comma-separated `complete|in-progress|cancelled`), `since`/`until` (started-at window: RFC3339, `YYYY-MM-DD HH:MM:SS`, or `YYYY-MM-DD`), `agent` (only measurements involving that agent), `sort` (`started|updated`, default `updated`), `reverse` (`true|false`, default newest-first)
 - `GET /api/measurement/{id}/status` - Get measurement status
 - `POST /api/measurement/{id}/cancel` - Cancel a stuck/in-progress measurement (marks its unfinished agents cancelled)
 
