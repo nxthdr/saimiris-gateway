@@ -44,7 +44,11 @@ jobs:
         env:
           PGPASSWORD: postgres
         run: |
-          for f in $(ls migrations/*.sql | sort); do
+          # Glob expansion is already sorted lexicographically (matches the
+          # NNNNN_ migration naming). --single-transaction wraps each file in a
+          # transaction: do NOT add a migration that must run outside one (e.g.
+          # CREATE INDEX CONCURRENTLY) without revisiting this.
+          for f in migrations/*.sql; do
             echo "==> applying $f"
             psql -h localhost -U postgres -d saimiris_ci -v ON_ERROR_STOP=1 --single-transaction -f "$f"
           done
