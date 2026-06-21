@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0"
 axum = "0.8"
-capnp = "0.25"
+capnp = "0.26"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.5", features = ["derive"] }
 clap-verbosity-flag = {version = "3.0.2", features = ["tracing"]}
@@ -34,7 +34,7 @@ axum-test = "20.0"
 criterion = "0.8"
 
 [build-dependencies]
-capnpc = "0.25"
+capnpc = "0.26"
 
 [[bench]]
 name = "probes_benchmark"
