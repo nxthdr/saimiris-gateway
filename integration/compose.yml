@@ -1,6 +1,6 @@
 services:
   saimiris-postgres:
-    image: postgres:18
+    image: postgres:19
     container_name: saimiris-postgres
     environment:
       POSTGRES_DB: saimiris_gateway
